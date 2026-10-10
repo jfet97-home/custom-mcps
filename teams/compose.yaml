@@ -1,0 +1,40 @@
+name: teams-mcp
+
+services:
+  teams-mcp:
+    build: .
+    image: teams-mcp-server:0.3.0-b0d7ba4f-http1
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    env_file: "${TEAMS_MCP_ENV_FILE:?set TEAMS_MCP_ENV_FILE to a private settings file}"
+    environment:
+      TEAMS_MCP_PORT: "9006"
+    volumes:
+      - auth:/home/mcp/.teams-mcp
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=1777
+    networks: [gateway]
+    ports: ["127.0.0.1:9006:9006"]
+    healthcheck:
+      test:
+        - CMD
+        - /app/.venv/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9006/health', timeout=3)"
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+
+volumes:
+  auth:
+
+networks:
+  gateway:
+    external: true
+    name: lunar-mcpx_default

@@ -1,0 +1,32 @@
+# Environment
+.env*
+*.session
+
+# IDE
+.idea/
+.vscode/
+
+# Python
+*.egg-info/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+build/
+dist/
+
+# Working artifacts
+.local/
+
+# AI tooling
+.claude/worktrees/
+.claude/settings.local.json
+.mcp.json
+AGENTS.override.md
+CLAUDE.local.md
+
+# local deployment and private authentication state
+LOCAL-SETUP.md
+.mypy_cache/
+.teams-mcp/

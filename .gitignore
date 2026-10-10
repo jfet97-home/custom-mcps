@@ -1,0 +1,17 @@
+node_modules/
+dist/
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+knowledge/
+.qmd/
+.env*
+!.env.example
+*.env
+secrets/
+.teams-mcp/
+*.sqlite*
+*.db
+*.log
