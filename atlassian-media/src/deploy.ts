@@ -20,7 +20,7 @@ export const deploymentEnvironmentKeys = [
 export type DeploymentEnvironmentKey = typeof deploymentEnvironmentKeys[number];
 export type DeploymentEnvironment = Partial<Record<DeploymentEnvironmentKey, string>>;
 
-const defaultComposeFile = join(homedir(), ".config", "mcpx", "atlassian-media.compose.yaml");
+const defaultComposeFile = join(homedir(), ".config", "atlassian-media", "compose.yaml");
 const existingContainer = "atlassian-media-atlassian-media-1";
 const dockerContext = "desktop-linux";
 

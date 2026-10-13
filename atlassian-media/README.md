@@ -48,7 +48,7 @@ deployment, `npm run build && npm run deploy` captures the running sidecar's
 environment internally and passes it into Compose, preserving credentials across
 rebuilds without printing them or writing a secret file. Shell variables override
 existing container values. The helper defaults to the saved local Compose file at
-`~/.config/mcpx/atlassian-media.compose.yaml`; use `--compose PATH` elsewhere.
+`~/.config/atlassian-media/compose.yaml`; use `--compose PATH` elsewhere.
 
 To migrate an existing private credential file once, run
 `npm run deploy -- --import-file /path/to/private/settings.env`. The helper reads it

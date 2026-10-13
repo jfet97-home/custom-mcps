@@ -19,8 +19,8 @@ and `npm test` inside `atlassian-media/`. See its [README](atlassian-media/READM
 
 ## Deployment
 
-On the Mac, installed Compose files remain under `~/.config/mcpx/`:
-`teams-mcp.compose.yaml` and `atlassian-media.compose.yaml`. Their build contexts
+On the Mac, installed Compose files are `~/.config/teams-mcp/compose.yaml`
+and `~/.config/atlassian-media/compose.yaml`. Their build contexts
 point to this checkout's corresponding subdirectories. Keep the existing project
 names, gateway network and authentication volume during upgrades.
 
