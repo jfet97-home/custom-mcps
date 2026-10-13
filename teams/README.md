@@ -10,7 +10,7 @@ MCP server for Microsoft Teams via Microsoft Graph API.
 | `list_teams` | List joined teams |
 | `list_channels` | List channels in a team |
 | `list_channel_messages` | List messages in a channel |
-| `list_thread_replies` | List replies in a thread |
+| `list_thread_replies` | List replies, including surviving replies under an unavailable parent |
 | `send_channel_message` | Send a message to a channel |
 | `reply_to_channel_message` | Reply to a thread |
 | `list_chats` | List chats |

@@ -5,9 +5,10 @@ import tempfile
 from importlib.metadata import PackageNotFoundError, version
 
 from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 
 from teams_mcp.auth import AuthManager
-from teams_mcp.graph import GraphClient
+from teams_mcp.graph import GraphApiError, GraphClient
 
 try:
     _VERSION = version("teams-mcp-server")
@@ -302,6 +303,9 @@ def _format_message(msg: dict) -> dict:
     mentions = msg.get("mentions") or []
     if mentions:
         result["mentions"] = mentions  # raw entities - ids are needed for @mention replies
+    for field in ("deletedDateTime", "lastModifiedDateTime"):
+        if msg.get(field) is not None:
+            result[field] = msg[field]
     return result
 
 
@@ -496,13 +500,36 @@ async def list_thread_replies(
     Use list_channel_messages to get the parent message_id (a top-level message).
     Returns the parent message followed by up to `limit` replies from one Graph page;
     later replies are not fetched and nothing marks the cut. System messages are
-    excluded.
+    excluded. If Graph returns 404 for the parent, its entry has parentUnavailable
+    and parentReadError; surviving replies are still returned. A parent 404 alone
+    does not prove deletion. Deleted messages include deletedDateTime when available.
     """
     _init_if_needed()
     client = _require_auth()
-    parent = await client.get_channel_message(team_id, channel_id, message_id)
-    replies = await client.list_thread_replies(team_id, channel_id, message_id, limit=limit)
-    result = [_format_message(parent)] + [
+    try:
+        replies = await client.list_thread_replies(team_id, channel_id, message_id, limit=limit)
+        try:
+            parent = _format_message(
+                await client.get_channel_message(team_id, channel_id, message_id)
+            )
+        except GraphApiError as exc:
+            if exc.status_code != 404:
+                raise
+            parent = {
+                "id": message_id,
+                "sender": None,
+                "createdDateTime": None,
+                "content": "",
+                "parentUnavailable": True,
+                "parentReadError": {
+                    "status": exc.status_code,
+                    "code": exc.code,
+                    "message": str(exc),
+                },
+            }
+    except GraphApiError as exc:
+        raise ToolError(str(exc)) from exc
+    result = [parent] + [
         _format_message(m)
         for m in replies
         if m.get("messageType") == "message"
