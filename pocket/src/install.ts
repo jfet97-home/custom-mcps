@@ -115,7 +115,7 @@ const program = Effect.gen(function*() {
     await writeFile(plist, launchAgentPlist({ node, entry, root, dataDir: settings.dataDir, port: settings.port, revision }), { mode: 0o600 })
     await exec("launchctl", ["bootstrap", domain, plist])
     let ready = false
-    for (let attempt = 0; attempt < 100; attempt++) {
+    for (let attempt = 0; attempt < 600; attempt++) {
       ready = await fetch(`http://127.0.0.1:${settings.port}/health`, { signal: AbortSignal.timeout(1000) }).then(async (r) => r.ok && (await r.json() as { revision?: string }).revision === revision, () => false)
       if (ready) break
       await new Promise((r) => setTimeout(r, 100))
