@@ -35,8 +35,12 @@ export const ActionItem = Schema.Struct({
   completedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
   isCompleted: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
   version: Schema.optionalKey(Schema.NullOr(Schema.Number)), updatedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  priority: Schema.optionalKey(Schema.NullOr(Schema.String)), category: Schema.optionalKey(Schema.NullOr(Schema.String))
+  priority: Schema.optionalKey(Schema.NullOr(Schema.String)), category: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  assignee: Schema.optionalKey(Schema.NullOr(Schema.String)), recordedAt: Schema.optionalKey(Schema.NullOr(Schema.String))
 })
+export const ActionStatus = Schema.Literals(["TODO", "IN_PROGRESS", "COMPLETED", "CANCELLED"])
+export const ActionPriority = Schema.Literals(["CRITICAL", "HIGH", "MEDIUM", "LOW"])
+export const ActionCategory = Schema.Literals(["TASK", "MEETING", "REMINDER"])
 export const ActionItemWithHash = Schema.Struct({ ...ActionItem.fields, hash: Hash })
 export const ActionPagination = Schema.Struct({ limit: Schema.Number, offset: Schema.Number, total: Schema.Number, returned: Schema.Number })
 export const RawActionPage = Schema.Struct({ success: Schema.Boolean, data: Schema.Array(Schema.Record(Schema.String, Schema.Unknown)), pagination: ActionPagination })
@@ -83,6 +87,8 @@ export const ArchiveRecordingRead = Schema.Struct({
   snapshots: Schema.Array(Schema.Struct({ capturedAt: Schema.String, source: Schema.String, raw: Schema.Unknown })),
   transcriptVersions: Schema.Array(Schema.Struct({ capturedAt: Schema.String, source: Schema.String, transcript: Transcript })),
   notesVersions: Schema.Array(Schema.Struct({ capturedAt: Schema.String, source: ArchiveSource, notes: Notes })),
+  localNotesVersions: Schema.Array(Schema.Struct({ revisionId: Schema.Number, summarizationId: Id, hash: Hash,
+    previousHash: Hash, baseRemoteHash: Hash, capturedAt: Schema.String, markdown: Schema.String })),
   events: Schema.Array(Schema.Struct({ id: Schema.String, receivedAt: Schema.String, eventType: Schema.NullOr(Schema.String), state: Schema.String, payload: Schema.Unknown, rawBodyBase64: Schema.String })),
   drafts: Schema.Array(Schema.Struct({ id: Schema.String, savedAt: Schema.String, hash: Hash, markdown: Schema.String, contextId: Schema.String })),
   jobs: Schema.Array(Schema.Struct({ id: Schema.String, eventType: Schema.String, state: Schema.String, createdAt: Schema.String, updatedAt: Schema.String, attempts: Schema.Number, lastError: Schema.NullOr(Schema.String) }))

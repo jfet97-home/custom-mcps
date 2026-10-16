@@ -150,25 +150,45 @@ constitute a reboot test.
 
 ## Tools and editing
 
+Tool names carry an explicit data boundary. `remote_*` accesses Pocket;
+`local_*` accesses saved SQLite content or local job state; `local_remote_*`
+imports, backs up or saves across both. Unprefixed tool names have been removed;
+refresh cached MCP tool schemas and update callers together with the image.
+
+Recording search accepts `page`, `limit`, `workspaceId`, `tagIds`, `folderIds`,
+`recordingDateAfter` and `recordingDateBefore`. Date bounds are passed to Pocket
+as `startDate`/`endDate`; use UTC dates or timezone-qualified ISO timestamps.
+Date bounds are inclusive. A date-only lower bound starts at midnight UTC;
+a date-only upper bound includes that whole UTC day. Timezone-qualified timestamps
+retain their explicit instant. Folder IDs match exact folders, without descendants.
+The internal search route ignores folder filters, so this client scans the full
+matching result set before applying them and paginating. A changed, inconsistent
+or over-10,000-result scan fails instead of returning misleading partial totals.
+Results remain recording-level matches; this is not the official MCP's
+section-hit search.
+
 | Tool | Behavior |
 | --- | --- |
-| `list_recordings` | Page recordings with optional folder filter. |
-| `search_recordings` | Pocket hybrid semantic search, up to 100 results. |
-| `get_recording` | Metadata, transcript, Notes versions and content hashes. |
-| `get_transcript` | Current complete text, raw segment indices, transcription ID and hash. |
-| `get_notes` | Complete original Markdown, summarization ID, versions and hash. |
-| `update_notes` | Save exactly the supplied Markdown without regeneration. |
-| `edit_transcript` | Validate raw indices and apply multiple text corrections in one batch. |
-| `search_action_items` | Search/list global items with actual global IDs and hashes. |
-| `update_action_item` | Change title/due date, or completion in a separate call. |
-| `list_folders` | Folder hierarchy and available space links. |
-| `list_spaces` | Active organization's spaces when available. |
-| `get_account_info` | Safe identity and subscription-type fields. |
+| `remote_list_recordings` | Page recordings with optional folder filter. |
+| `remote_search_recordings` | Paged semantic search with recording dates, tag IDs and folder IDs. |
+| `remote_get_recording` | Metadata, transcript, Notes versions and content hashes. |
+| `remote_get_transcript` | Current complete text, raw segment indices, transcription ID and hash. |
+| `remote_get_notes` | Complete original Markdown, summarization ID, versions and hash. |
+| `local_remote_update_notes` | Save exactly the supplied Markdown without regeneration. |
+| `local_remote_edit_transcript` | Validate raw indices and apply multiple text corrections in one batch. |
+| `remote_search_action_items` | Search/list global items with status, priority, category, due and recording-date filters. |
+| `local_remote_update_action_item` | Change status, priority, title/label, description/context, assignee or due date; complete separately. |
+| `remote_list_folders` | Folder hierarchy and available space links. |
+| `remote_list_spaces` | Active organization's spaces when available. |
+| `remote_get_account_info` | Safe identity and subscription-type fields. |
+| `remote_list_tags` | Safe tag IDs, names and colors for recording filters. |
+| `local_remote_query_pocket_meetings` | Pocket Ask Pocket answer and recording sources; creates a chat and can consume quota. |
+| `local_query_pocket_meetings_status` | Read a private query journal entry or recent query metadata without contacting Pocket. |
 
-`get_notes` selects the most recently updated summarization by default and lists
+`remote_get_notes` selects the most recently updated summarization by default and lists
 the available versions. Pass `summarizationId` to choose explicitly. Recording,
 row, summarization and transcription IDs are distinct. Global action-item IDs
-also differ from summary-source item IDs; use IDs from `search_action_items`.
+also differ from summary-source item IDs; use IDs from `remote_search_action_items`.
 
 Every write requires `expectedHash` from a fresh read tool. Transcript hashes bind
 content to the transcription ID. Notes version fields describe source formats,
@@ -197,7 +217,7 @@ Notes recovery uses `content.document.markdown` through the normal write tool
 with a freshly read hash.
 
 Pocket transcript edits overwrite **both** `text` and `originalText`. When these
-fields differ, `edit_transcript` refuses the edit unless
+fields differ, `local_remote_edit_transcript` refuses the edit unless
 `allowOriginalTextOverwrite=true`. Backups preserve their distinction and the raw
 `originalTranscription`, but the verified text-edit endpoint cannot restore two
 different values separately. Full automatic restoration of that distinction is
@@ -240,12 +260,12 @@ can contain complete personal conversations, so preserve the existing private
 data-directory permissions and never copy their contents into Git or logs.
 
 Use the archive tools to search or read saved snapshots and inspect sync, backfill
-and job status. `archive_backfill` walks the available recording pages and stores
+and job status. `local_remote_archive_backfill` walks the available recording pages and stores
 snapshots only; it does not create rewrite jobs or change historical Notes. It can
 capture old Notes that the internal recording API still returns, but Pocket's
 future retention behavior is not guaranteed. Backfill is resumable and its cursor
 is local archive state. A failed recording does not stop later recordings: both
-the backfill result and `archive_status.backfill` report `failedRecordings` with
+the backfill result and `local_archive_status.backfill` report `failedRecordings` with
 recording IDs and safe error codes. Unsupported decoded shapes retain their raw
 API response in the archive. `complete` means the page scan finished; inspect the
 failure list separately. After a receiver outage, begin with `startPage: 1` and
@@ -256,21 +276,25 @@ The archive MCP inputs on the existing `pocket` server are:
 
 | Tool | Inputs | Purpose |
 | --- | --- | --- |
-| `archive_search` | `query`; optional `limit` (1–100, default 20), `offset` (default 0) | Search local snapshots. |
-| `archive_read` | `recordingId`; optional `limit` (1–100, default 20) | Read a recording's captured versions, events, drafts and jobs. |
-| `archive_read_event` | `eventId` (SHA-256 ID) | Read one original archived event and linked job IDs. |
-| `archive_status` | none | Read counts, bridge state, writes state and backfill progress. |
-| `archive_backfill` | optional `maxPages` (1–20, default 1), optional positive `startPage` | Archive historical Pocket pages only. |
-| `archive_sync_bridge` | optional `maxPages` (1–20, default 5) | Import a bounded number of Pi event pages. |
-| `archive_jobs` | optional `recordingId`, optional `limit` (1–100, default 20) | List durable jobs. |
-| `archive_job_claim` | none | Claim the next eligible job; returns its 30-minute lease token and fencing token. |
-| `archive_job_renew` | `jobId`, `leaseToken`, `fencingToken` | Renew job ownership. |
-| `archive_job_sources` | `jobId`, `leaseToken`, `fencingToken`, `source` (`transcript` or `notes`); optional `limit` (1–12,000, default 12,000), `contextId`, `cursor` (0–100,000,000), `summarizationId` | Read and archive source chunks. |
-| `archive_job_prepare_draft` | `jobId`, `leaseToken`, `fencingToken`, `contextId`, `markdown`; optional `allowShorter` (default false) | Persist the full draft before saving. |
-| `archive_job_save` | `jobId`, `leaseToken`, `fencingToken`, `draftId` | Save only the selected persisted draft after source checks. |
-| `archive_job_reconcile` | `jobId`, `leaseToken`, `fencingToken`, `draftId` | Reconcile a save whose outcome is uncertain. |
-| `archive_job_finish` | `jobId`, `leaseToken`, `fencingToken`, `state` (`needs_review`, `source_gone` or `skipped`), `reason` (max 1,000 chars) | Close with a terminal no-write outcome. |
-| `archive_job_retry` | `jobId` | Retry only an eligible job. |
+| `local_archive_list` | optional `query` (up to 256 characters), `limit`, `offset` | Browse saved recordings only. |
+| `local_archive_notes_editor` | `recordingId`, `summarizationId` | Read the local copy or captured Pocket base and its current edit hash. |
+| `local_archive_update_notes` | `recordingId`, `summarizationId`, `expectedHash`, `markdown` | Append a local-only revision, preserving the originals. |
+| `local_remote_archive_refresh` | `recordingId` | Explicitly capture Pocket's current data without uploading local edits. |
+| `local_archive_search` | `query`; optional `limit` (1–100, default 20), `offset` (default 0) | Search local snapshots. |
+| `local_archive_read` | `recordingId`; optional `limit` (1–100, default 20) | Read a recording's captured versions, events, drafts and jobs. |
+| `local_archive_read_event` | `eventId` (SHA-256 ID) | Read one original archived event and linked job IDs. |
+| `local_archive_status` | none | Read counts, bridge state, writes state and backfill progress. |
+| `local_remote_archive_backfill` | optional `maxPages` (1–20, default 1), optional positive `startPage` | Archive historical Pocket pages only. |
+| `local_remote_archive_sync_bridge` | optional `maxPages` (1–20, default 5) | Import a bounded number of Pi event pages. |
+| `local_archive_jobs` | optional `recordingId`, optional `limit` (1–100, default 20) | List durable jobs. |
+| `local_remote_archive_job_claim` | none | Claim the next eligible job; returns its 30-minute lease token and fencing token. |
+| `local_archive_job_renew` | `jobId`, `leaseToken`, `fencingToken` | Renew job ownership. |
+| `local_remote_archive_job_sources` | `jobId`, `leaseToken`, `fencingToken`, `source` (`transcript` or `notes`); optional `limit` (1–12,000, default 12,000), `contextId`, `cursor` (0–100,000,000), `summarizationId` | Read and archive source chunks. |
+| `local_archive_job_prepare_draft` | `jobId`, `leaseToken`, `fencingToken`, `contextId`, `markdown`; optional `allowShorter` (default false) | Persist the full draft before saving. |
+| `local_remote_archive_job_save` | `jobId`, `leaseToken`, `fencingToken`, `draftId` | Save only the selected persisted draft after source checks. |
+| `local_remote_archive_job_reconcile` | `jobId`, `leaseToken`, `fencingToken`, `draftId` | Reconcile a save whose outcome is uncertain. |
+| `local_archive_job_finish` | `jobId`, `leaseToken`, `fencingToken`, `state` (`needs_review`, `source_gone` or `skipped`), `reason` (max 1,000 chars) | Close with a terminal no-write outcome. |
+| `local_archive_job_retry` | `jobId` | Retry only an eligible job. |
 
 The source tool returns `contextId`, `cursor`, `nextCursor`, `totalCharacters`,
 `chunkHash`, full `sourceHash`, and `content`, alongside recording and source
@@ -301,7 +325,7 @@ events while retaining the local job state, reason, and any draft.
 The job queue uses renewable leases and fencing so stale workers cannot overwrite
 a newer job. Jobs for one recording are serialized. Use the dedicated job tools
 for claiming and renewing work, reading sources, saving drafts, and reconciling
-uncertain outcomes; do not bypass that workflow with a direct `update_notes` call.
+uncertain outcomes; do not bypass that workflow with a direct `local_remote_update_notes` call.
 
 Successful latest-Notes saves supersede older queued work already covered by their
 fresh source snapshot. Exhausting the single reconciled retry ends the job as
@@ -384,3 +408,67 @@ skillshare sync --global
 
 The skills contain no credentials or private account/recording content. Update
 their installed copies with Skillshare after changing the committed sources.
+
+## Local archive browser
+
+The existing HTTP service serves the archive at
+`http://127.0.0.1:9011/archive/` (or the configured published port). Open a private
+browser session from the Mac checkout:
+
+```sh
+cd ~/Developer/custom-mcps/pocket
+npm run archive:open
+```
+
+The command uses the existing private HTTP credential only to request a one-use,
+short-lived UI code. It opens that code in the URL fragment and does not print it.
+The page immediately removes the fragment and exchanges it for a scoped browser
+session. The UI never receives the MCP bearer. Its cookie cannot authorize MCP
+calls. The CLI does not open SQLite or renew Pocket authentication. Keep the
+service loopback binding; no public proxy route is installed for the archive.
+
+Browse and search saved recordings, complete captured Notes/transcripts and
+version history. These operations query only local SQLite. Saving in the editor
+creates a **local-only Notes revision**, with a required current hash and preserved
+history. It never changes captured Pocket originals or the webhook refinement
+sources. “Refresh from Pocket” is an explicit separate action: it reads the remote
+recording and captures a new snapshot without uploading or replacing local edits.
+If Pocket has deleted the recording, the existing local copy remains readable.
+
+The first additive local-edit schema migration creates a private SQLite backup
+before adding the new table. Migration and UI share the existing process lock
+and database connection. UI DTOs omit raw API/webhook payloads and credentials.
+The page uses pinned Effect v4 Atom/AtomRegistry and a bundled local script, with
+no CDN or raw HTML rendering of source content.
+
+## Pocket-generated meeting answers
+
+`local_remote_query_pocket_meetings` asks Pocket's in-app Ask Pocket engine using
+`query`, optional `language`, and required `consumeQuota:true`. It returns a
+synthesized answer, allowlisted source recordings and a local operation ID.
+This creates a Pocket chat and may consume account quota; it is not the official
+MCP endpoint, and server permission/quota limits remain authoritative. No other
+provider or local synthesis is substituted. The webhook workflow does not use it.
+
+Pass a fresh `clientRequestId` for a new question and keep the same key after
+a timeout. Reusing a key never sends another generated query. Use
+`local_query_pocket_meetings_status` by operation ID or client request ID to
+recover the result; without an ID it returns bounded recent metadata only.
+
+Long queries return `status:"running"` with the operation ID after a bounded
+initial wait. Poll the local status tool for completion. The stream belongs to
+the existing service process, so the gateway's shorter per-call timeout does
+not cancel the query. A service shutdown leaves a recoverable uncertain entry;
+startup never replays it. Streams are bounded to 180 seconds total, 60 seconds
+idle, 2 MiB and 32,768 data events.
+
+Recovery reads report stale unfinished journal entries as `uncertain` after
+about four minutes without progress. A hard crash cannot leave callers polling
+`running` indefinitely. Preserve the operation ID and inspect the existing chat;
+this status never authorizes another generated request.
+
+The private query journal keeps intent and answer/recovery state outside Git.
+An interrupted stream is an uncertain outcome: inspect the existing Pocket chat
+and journal before asking again. The service never retries a generated query
+automatically. Fixture coverage validates the stream protocol; generating a live
+answer is a separate content operation, not an authentication/readiness check.

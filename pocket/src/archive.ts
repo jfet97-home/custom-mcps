@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
-import { chmod, lstat, open } from "node:fs/promises"
+import { chmod, lstat, open, unlink } from "node:fs/promises"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { Context, Effect, Layer, Schema } from "effect"
@@ -51,11 +51,71 @@ export interface BackfillFailure {
   readonly code: string
 }
 
+export interface ArchiveUiRecording {
+  readonly recordingId: string
+  readonly title: string | null
+  readonly description: string | null
+  readonly recordingAt: string | null
+  readonly createdAt: string | null
+  readonly updatedAt: string | null
+  readonly duration: number | null
+  readonly firstSeenAt: string
+  readonly lastSeenAt: string
+  readonly snapshotCount: number
+  readonly transcriptVersionCount: number
+  readonly notesVersionCount: number
+  readonly localNotesRevisionCount: number
+}
+
+export interface ArchiveUiTranscriptVersion {
+  readonly versionId: number
+  readonly transcriptionId: string
+  readonly rowId: string
+  readonly hash: string
+  readonly capturedAt: string
+  readonly source: "backfill" | "workflow"
+  readonly updatedAt: string | null
+  readonly textLength: number
+  readonly segmentCount: number
+}
+
+export interface ArchiveUiNotesVersion {
+  readonly versionId: number
+  readonly summarizationId: string
+  readonly rowId: string
+  readonly hash: string
+  readonly capturedAt: string
+  readonly source: ArchiveSourceName
+  readonly updatedAt: string | null
+  readonly edited: boolean
+  readonly textLength: number
+  readonly localHead: { readonly revisionId: number; readonly hash: string; readonly capturedAt: string; readonly baseRemoteHash: string } | null
+}
+
+export interface ArchiveUiLocalNotesRevision {
+  readonly revisionId: number
+  readonly hash: string
+  readonly previousHash: string
+  readonly baseRemoteHash: string
+  readonly capturedAt: string
+  readonly textLength: number
+}
+
 export interface ArchiveService {
   readonly assertExclusive: Effect.Effect<void, PocketError>
   readonly recordSnapshot: (snapshot: ArchiveSnapshot) => Effect.Effect<void, PocketError>
   readonly search: (query: string, limit: number, offset: number) => Effect.Effect<unknown, PocketError>
   readonly read: (recordingId: string, limit: number) => Effect.Effect<unknown, PocketError>
+  readonly uiBrowse: (query: string, limit: number, offset: number) => Effect.Effect<{ readonly recordings: ReadonlyArray<ArchiveUiRecording>; readonly pagination: { readonly limit: number; readonly offset: number; readonly total: number } }, PocketError>
+  readonly uiReadRecording: (recordingId: string) => Effect.Effect<{ readonly recording: ArchiveUiRecording }, PocketError>
+  readonly uiListTranscriptVersions: (recordingId: string, limit: number, offset: number) => Effect.Effect<{ readonly versions: ReadonlyArray<ArchiveUiTranscriptVersion>; readonly pagination: { readonly limit: number; readonly offset: number; readonly total: number } }, PocketError>
+  readonly uiReadTranscriptPage: (recordingId: string, versionId: number | null, offset: number, limit: number) => Effect.Effect<{ readonly version: ArchiveUiTranscriptVersion; readonly text: string; readonly offset: number; readonly returned: number; readonly hasMore: boolean }, PocketError>
+  readonly uiListNotesVersions: (recordingId: string, limit: number, offset: number) => Effect.Effect<{ readonly versions: ReadonlyArray<ArchiveUiNotesVersion>; readonly pagination: { readonly limit: number; readonly offset: number; readonly total: number } }, PocketError>
+  readonly uiReadNotesPage: (recordingId: string, versionId: number, offset: number, limit: number) => Effect.Effect<{ readonly version: ArchiveUiNotesVersion; readonly markdown: string; readonly offset: number; readonly returned: number; readonly hasMore: boolean }, PocketError>
+  readonly uiReadLocalNotesEditor: (recordingId: string, summarizationId: string) => Effect.Effect<{ readonly summarizationId: string; readonly source: "local" | "pocket"; readonly expectedHash: string; readonly baseRemoteHash: string; readonly remoteHash: string; readonly localRevisionId: number | null; readonly changedRemotely: boolean; readonly textLength: number; readonly markdown: string | null }, PocketError>
+  readonly uiListLocalNotesHistory: (recordingId: string, summarizationId: string, limit: number, offset: number) => Effect.Effect<{ readonly revisions: ReadonlyArray<ArchiveUiLocalNotesRevision>; readonly pagination: { readonly limit: number; readonly offset: number; readonly total: number } }, PocketError>
+  readonly uiReadLocalNotesPage: (recordingId: string, revisionId: number, offset: number, limit: number) => Effect.Effect<{ readonly revision: ArchiveUiLocalNotesRevision; readonly markdown: string; readonly offset: number; readonly returned: number; readonly hasMore: boolean }, PocketError>
+  readonly uiSaveLocalNotes: (recordingId: string, summarizationId: string, expectedHash: string, markdown: string) => Effect.Effect<{ readonly revisionId: number; readonly hash: string; readonly previousHash: string; readonly baseRemoteHash: string; readonly capturedAt: string }, PocketError>
   readonly readEvent: (eventId: string) => Effect.Effect<unknown, PocketError>
   readonly status: (bridge: { configured: boolean; error: string | null; writesEnabled: boolean }) => Effect.Effect<unknown, PocketError>
   readonly backfillState: Effect.Effect<{ readonly nextPage: number; readonly complete: boolean; readonly lastRunAt: string | null; readonly failedRecordings: ReadonlyArray<BackfillFailure> }, PocketError>
@@ -237,6 +297,19 @@ const schemaSql = `
     completed_at TEXT NOT NULL
   ) STRICT;
   CREATE INDEX IF NOT EXISTS final_notes_echo_idx ON final_notes(recording_id, summarization_id, content_hash);
+  CREATE TABLE IF NOT EXISTS local_notes_revisions (
+    revision_id INTEGER PRIMARY KEY,
+    recording_id TEXT NOT NULL REFERENCES recordings(recording_id),
+    summarization_id TEXT NOT NULL,
+    parent_revision_id INTEGER REFERENCES local_notes_revisions(revision_id),
+    previous_hash TEXT NOT NULL,
+    base_remote_hash TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    captured_at TEXT NOT NULL,
+    markdown TEXT NOT NULL
+  ) STRICT;
+  CREATE INDEX IF NOT EXISTS local_notes_head_idx ON local_notes_revisions(recording_id,summarization_id,revision_id DESC);
+  CREATE INDEX IF NOT EXISTS local_notes_hash_idx ON local_notes_revisions(recording_id,summarization_id,content_hash);
   CREATE TABLE IF NOT EXISTS sync_state (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -345,6 +418,24 @@ const openArchive = async (dataDir: string): Promise<ArchiveHandle> => {
     await chmod(path, 0o600)
     const metadata = await lstat(path)
     if (!metadata.isFile() || metadata.isSymbolicLink() || (metadata.mode & 0o077) !== 0) throw failure("storage", "The archive database must be a private regular file with mode 0600.")
+    const localNotesTable = database.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='local_notes_revisions'").get()
+    const existingTables = database.prepare("SELECT COUNT(*) AS total FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").get()
+    if (!localNotesTable && Number(asRow(existingTables).total ?? 0) > 0) {
+      const backupDirectory = join(dataDir, "backups")
+      await privateDirectory(backupDirectory)
+      const backupPath = join(backupDirectory, `${randomUUID()}-archive-before-local-notes.sqlite`)
+      try {
+        database.prepare("VACUUM INTO ?").run(backupPath)
+        await chmod(backupPath, 0o600)
+        const backupMetadata = await lstat(backupPath)
+        if (!backupMetadata.isFile() || backupMetadata.isSymbolicLink() || (backupMetadata.mode & 0o077) !== 0) {
+          throw failure("storage", "The pre-migration archive backup has unsafe permissions.")
+        }
+      } catch {
+        await unlink(backupPath).catch(() => undefined)
+        throw failure("storage", "Could not create the private pre-migration archive backup; no archive schema changes were made.")
+      }
+    }
     database.exec(schemaSql)
     const contextColumns = database.prepare("PRAGMA table_info(job_contexts)").all() as SqlRow[]
     if (!contextColumns.some((column) => column.name === "notes_selection")) {
@@ -378,6 +469,71 @@ const makeArchive = (database: DatabaseSync, lockHealth: ArchiveHandle["lockHeal
       VALUES(?,?,?,?,?,?,?,?)`).run(recordingId, notes.summarizationId, notes.rowId, notesHash, capturedAt, source, notes.markdown, json(document))
     insertSearchDocument(recordingId, "notes", `${notes.summarizationId}:${notesHash}:${source}`, capturedAt, notes.markdown)
   }
+  const uiRecordingFromRow = (row: SqlRow): ArchiveUiRecording => {
+    const metadata = asRecord(parseJson(row.metadata_json)) ?? {}
+    return {
+      recordingId: String(row.recording_id),
+      title: typeof metadata.title === "string" ? metadata.title : null,
+      description: typeof metadata.description === "string" ? metadata.description : null,
+      recordingAt: typeof metadata.recordingAt === "string" ? metadata.recordingAt : null,
+      createdAt: typeof metadata.createdAt === "string" ? metadata.createdAt : null,
+      updatedAt: typeof metadata.updatedAt === "string" ? metadata.updatedAt : null,
+      duration: typeof metadata.duration === "number" ? metadata.duration : null,
+      firstSeenAt: String(row.first_seen_at), lastSeenAt: String(row.last_seen_at),
+      snapshotCount: Number(row.snapshot_count), transcriptVersionCount: Number(row.transcript_version_count),
+      notesVersionCount: Number(row.notes_version_count), localNotesRevisionCount: Number(row.local_notes_revision_count)
+    }
+  }
+  const uiRecordingRow = (recordingId: string): SqlRow => {
+    const value = database.prepare(`SELECT r.recording_id,r.metadata_json,r.first_seen_at,r.last_seen_at,
+      (SELECT COUNT(*) FROM api_snapshots s WHERE s.recording_id=r.recording_id) AS snapshot_count,
+      (SELECT COUNT(*) FROM transcript_versions t WHERE t.recording_id=r.recording_id) AS transcript_version_count,
+      (SELECT COUNT(*) FROM notes_versions n WHERE n.recording_id=r.recording_id) AS notes_version_count,
+      (SELECT COUNT(*) FROM local_notes_revisions l WHERE l.recording_id=r.recording_id) AS local_notes_revision_count
+      FROM recordings r WHERE r.recording_id=?`).get(recordingId)
+    if (!value) throw failure("validation", "The recording is not present in the local archive.")
+    return asRow(value)
+  }
+  const uiTranscriptVersion = (row: SqlRow): ArchiveUiTranscriptVersion => ({
+    versionId: Number(row.version_id), transcriptionId: String(row.transcription_id),
+    rowId: String(row.row_id ?? ""), hash: String(row.content_hash), capturedAt: String(row.captured_at),
+    source: String(row.source) === "workflow" ? "workflow" : "backfill",
+    updatedAt: typeof row.updated_at === "string" ? row.updated_at : null,
+    textLength: Number(row.text_length ?? 0), segmentCount: Number(row.segment_count ?? 0)
+  })
+  const uiTranscriptVersionSql = `SELECT version_id,transcription_id,content_hash,captured_at,source,
+    json_extract(document_json,'$.rowId') AS row_id,json_extract(document_json,'$.updatedAt') AS updated_at,
+    length(json_extract(document_json,'$.text')) AS text_length,
+    json_array_length(json_extract(document_json,'$.segments')) AS segment_count
+    FROM transcript_versions WHERE recording_id=?`
+  const uiNotesVersion = (row: SqlRow): ArchiveUiNotesVersion => {
+    const local = database.prepare(`SELECT revision_id,content_hash,captured_at,base_remote_hash FROM local_notes_revisions
+      WHERE recording_id=? AND summarization_id=? ORDER BY revision_id DESC LIMIT 1`).get(String(row.recording_id), String(row.summarization_id))
+    const localRow = local ? asRow(local) : undefined
+    return {
+      versionId: Number(row.version_id), summarizationId: String(row.summarization_id), rowId: String(row.row_id),
+      hash: String(row.content_hash), capturedAt: String(row.captured_at), source: String(row.source) as ArchiveSourceName,
+      updatedAt: typeof row.updated_at === "string" ? row.updated_at : null, edited: row.edited === 1 || row.edited === true,
+      textLength: Number(row.text_length ?? 0),
+      localHead: localRow ? { revisionId: Number(localRow.revision_id), hash: String(localRow.content_hash), capturedAt: String(localRow.captured_at), baseRemoteHash: String(localRow.base_remote_hash) } : null
+    }
+  }
+  const uiNotesVersionSql = `SELECT version_id,recording_id,summarization_id,row_id,content_hash,captured_at,source,
+    json_extract(document_json,'$.updatedAt') AS updated_at,json_extract(document_json,'$.edited') AS edited,
+    length(markdown) AS text_length
+    FROM notes_versions WHERE recording_id=?`
+  const uiLocalRevision = (row: SqlRow): ArchiveUiLocalNotesRevision => ({
+    revisionId: Number(row.revision_id), hash: String(row.content_hash), previousHash: String(row.previous_hash),
+    baseRemoteHash: String(row.base_remote_hash), capturedAt: String(row.captured_at), textLength: Number(row.text_length ?? 0)
+  })
+  const uiPage = (limit: number, offset: number, maxLimit = 100): void => {
+    if (!Number.isInteger(limit) || limit < 1 || limit > maxLimit || !Number.isInteger(offset) || offset < 0 || offset > 1000000) {
+      throw failure("validation", "The local archive page request is outside its allowed range.")
+    }
+  }
+  const requireSafeUiId = (value: string): void => {
+    if (!safeId(value)) throw failure("validation", "The local archive identifier is invalid.")
+  }
   const rowByJobId = (jobId: string): SqlRow => {
     const row = database.prepare("SELECT * FROM jobs WHERE job_id=?").get(jobId)
     if (!row) throw failure("validation", "The archive job does not exist.")
@@ -401,15 +557,20 @@ const makeArchive = (database: DatabaseSync, lockHealth: ArchiveHandle["lockHeal
       snapshot.notes.some((notes) => notes.recordingId !== snapshot.recordingId)) {
       throw failure("validation", "The archived recording snapshot is internally inconsistent.")
     }
-    const serializedMetadata = json(snapshot.metadata)
+    const existingRecording = database.prepare("SELECT metadata_json FROM recordings WHERE recording_id=?").get(snapshot.recordingId)
+    const preservedMetadata = snapshot.decodeError && existingRecording
+      ? parseJson(existingRecording && asRow(existingRecording).metadata_json)
+      : snapshot.metadata
+    const serializedMetadata = json(preservedMetadata)
     database.prepare(`INSERT INTO recordings(recording_id,metadata_json,first_seen_at,last_seen_at) VALUES(?,?,?,?)
       ON CONFLICT(recording_id) DO UPDATE SET metadata_json=excluded.metadata_json,last_seen_at=excluded.last_seen_at`)
       .run(snapshot.recordingId, serializedMetadata, snapshot.capturedAt, snapshot.capturedAt)
     const rawHash = contentHash(snapshot.raw)
     database.prepare(`INSERT OR IGNORE INTO api_snapshots(recording_id,captured_at,source,content_hash,raw_json) VALUES(?,?,?,?,?)`)
       .run(snapshot.recordingId, snapshot.capturedAt, snapshot.source, rawHash, json(snapshot.raw))
-    const title = typeof metadata.title === "string" ? metadata.title : ""
-    const description = typeof metadata.description === "string" ? metadata.description : ""
+    const indexedMetadata = asRecord(preservedMetadata) ?? metadata
+    const title = typeof indexedMetadata.title === "string" ? indexedMetadata.title : ""
+    const description = typeof indexedMetadata.description === "string" ? indexedMetadata.description : ""
     insertSearchDocument(snapshot.recordingId, "recording", rawHash, snapshot.capturedAt, `${title}\n${description}`)
     if (snapshot.transcript) {
       const transcriptHash = contentHash(snapshot.transcript)
@@ -470,6 +631,8 @@ const makeArchive = (database: DatabaseSync, lockHealth: ArchiveHandle["lockHeal
       const events = database.prepare("SELECT event_id,received_at,event_type,state,payload_json,raw_body_base64 FROM webhook_events WHERE recording_id=? ORDER BY received_at DESC LIMIT ?").all(recordingId, limit) as SqlRow[]
       const jobs = database.prepare("SELECT * FROM jobs WHERE recording_id=? ORDER BY created_at DESC LIMIT ?").all(recordingId, limit) as SqlRow[]
       const drafts = database.prepare("SELECT draft_id,saved_at,content_hash,markdown,context_id FROM job_drafts WHERE job_id IN (SELECT job_id FROM jobs WHERE recording_id=?) ORDER BY saved_at DESC LIMIT ?").all(recordingId, limit) as SqlRow[]
+      const localNotesVersions = database.prepare(`SELECT revision_id,summarization_id,content_hash,previous_hash,base_remote_hash,captured_at,markdown
+        FROM local_notes_revisions WHERE recording_id=? ORDER BY revision_id DESC LIMIT ?`).all(recordingId, limit) as SqlRow[]
       return {
         recordingId, metadata: parseJson(row.metadata_json), firstSeenAt: String(row.first_seen_at), lastSeenAt: String(row.last_seen_at),
         snapshots: snapshots.map((item) => ({ capturedAt: String(item.captured_at), source: String(item.source), raw: parseJson(item.raw_json) })),
@@ -477,9 +640,152 @@ const makeArchive = (database: DatabaseSync, lockHealth: ArchiveHandle["lockHeal
         notesVersions: notes.map((item) => ({ capturedAt: String(item.captured_at), source: String(item.source), notes: parseJson(item.document_json) })),
         events: events.map((item) => ({ id: String(item.event_id), receivedAt: String(item.received_at), eventType: item.event_type === null ? null : String(item.event_type), state: String(item.state), payload: parseJson(item.payload_json), rawBodyBase64: String(item.raw_body_base64) })),
         drafts: drafts.map((item) => ({ id: String(item.draft_id), savedAt: String(item.saved_at), hash: String(item.content_hash), markdown: String(item.markdown), contextId: String(item.context_id) })),
+        localNotesVersions: localNotesVersions.map((item) => ({
+          revisionId: Number(item.revision_id), summarizationId: String(item.summarization_id),
+          hash: String(item.content_hash), previousHash: String(item.previous_hash),
+          baseRemoteHash: String(item.base_remote_hash), capturedAt: String(item.captured_at), markdown: String(item.markdown)
+        })),
         jobs: jobs.map((item) => readJob(item))
       }
     }),
+    uiBrowse: (query, limit, offset) => databaseEffect(() => {
+      uiPage(limit, offset)
+      if (query.length > 256) throw failure("validation", "The local archive search query is too long.")
+      const trimmed = query.trim()
+      const predicate = "(?='' OR EXISTS (SELECT 1 FROM search_documents s WHERE s.recording_id=r.recording_id AND instr(lower(s.text),lower(?)) > 0))"
+      const total = Number(asRow(database.prepare(`SELECT COUNT(*) AS total FROM recordings r WHERE ${predicate}`).get(trimmed, trimmed)).total ?? 0)
+      const rows = database.prepare(`SELECT r.recording_id,r.metadata_json,r.first_seen_at,r.last_seen_at,
+        (SELECT COUNT(*) FROM api_snapshots s WHERE s.recording_id=r.recording_id) AS snapshot_count,
+        (SELECT COUNT(*) FROM transcript_versions t WHERE t.recording_id=r.recording_id) AS transcript_version_count,
+        (SELECT COUNT(*) FROM notes_versions n WHERE n.recording_id=r.recording_id) AS notes_version_count,
+        (SELECT COUNT(*) FROM local_notes_revisions l WHERE l.recording_id=r.recording_id) AS local_notes_revision_count
+        FROM recordings r WHERE ${predicate} ORDER BY r.last_seen_at DESC,r.recording_id LIMIT ? OFFSET ?`)
+        .all(trimmed, trimmed, limit, offset) as SqlRow[]
+      return { recordings: rows.map(uiRecordingFromRow), pagination: { limit, offset, total } }
+    }),
+    uiReadRecording: (recordingId) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      const row = uiRecordingRow(recordingId)
+      return { recording: uiRecordingFromRow(row) }
+    }),
+    uiListTranscriptVersions: (recordingId, limit, offset) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      uiPage(limit, offset)
+      const total = Number(asRow(database.prepare("SELECT COUNT(*) AS total FROM transcript_versions WHERE recording_id=?").get(recordingId)).total ?? 0)
+      const rows = database.prepare(`${uiTranscriptVersionSql} ORDER BY captured_at DESC,version_id DESC LIMIT ? OFFSET ?`).all(recordingId, limit, offset) as SqlRow[]
+      return { versions: rows.map(uiTranscriptVersion), pagination: { limit, offset, total } }
+    }),
+    uiReadTranscriptPage: (recordingId, versionId, offset, limit) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      uiPage(1, offset, 1)
+      uiPage(limit, 0, 20000)
+      const select = `SELECT version_id,transcription_id,content_hash,captured_at,source,document_json,
+        json_extract(document_json,'$.rowId') AS row_id,json_extract(document_json,'$.updatedAt') AS updated_at,
+        length(json_extract(document_json,'$.text')) AS text_length,
+        json_array_length(json_extract(document_json,'$.segments')) AS segment_count
+        FROM transcript_versions WHERE recording_id=?`
+      const value = versionId === null
+        ? database.prepare(`${select} ORDER BY captured_at DESC,version_id DESC LIMIT 1`).get(recordingId)
+        : database.prepare(`${select} AND version_id=?`).get(recordingId, versionId)
+      if (!value) throw failure("validation", "The transcript version is not present in the local archive.")
+      const row = asRow(value)
+      const version = uiTranscriptVersion(row)
+      const transcript = parseJson<TranscriptDocument>(row.document_json)
+      const text = transcript.text.slice(offset, offset + limit)
+      return { version, text, offset, returned: text.length, hasMore: offset + text.length < transcript.text.length }
+    }),
+    uiListNotesVersions: (recordingId, limit, offset) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      uiPage(limit, offset)
+      const total = Number(asRow(database.prepare("SELECT COUNT(*) AS total FROM notes_versions WHERE recording_id=?").get(recordingId)).total ?? 0)
+      const rows = database.prepare(`${uiNotesVersionSql} ORDER BY captured_at DESC,
+        COALESCE(json_extract(document_json,'$.updatedAt'),captured_at) DESC,version_id DESC LIMIT ? OFFSET ?`).all(recordingId, limit, offset) as SqlRow[]
+      return { versions: rows.map(uiNotesVersion), pagination: { limit, offset, total } }
+    }),
+    uiReadNotesPage: (recordingId, versionId, offset, limit) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      uiPage(1, offset, 1)
+      uiPage(limit, 0, 20000)
+      const value = database.prepare(`SELECT version_id,recording_id,summarization_id,row_id,content_hash,captured_at,source,
+        json_extract(document_json,'$.updatedAt') AS updated_at,json_extract(document_json,'$.edited') AS edited,length(markdown) AS text_length,markdown
+        FROM notes_versions WHERE recording_id=? AND version_id=?`).get(recordingId, versionId)
+      if (!value) throw failure("validation", "The Notes version is not present in the local archive.")
+      const row = asRow(value)
+      const fullMarkdown = String(row.markdown)
+      const version = { ...uiNotesVersion(row), textLength: fullMarkdown.length }
+      const markdown = fullMarkdown.slice(offset, offset + limit)
+      return { version, markdown, offset, returned: markdown.length, hasMore: offset + markdown.length < fullMarkdown.length }
+    }),
+    uiReadLocalNotesEditor: (recordingId, summarizationId) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      requireSafeUiId(summarizationId)
+      const remoteValue = database.prepare(`SELECT content_hash,markdown FROM notes_versions
+        WHERE recording_id=? AND summarization_id=? AND source IN ('backfill','workflow','final')
+        ORDER BY captured_at DESC,version_id DESC LIMIT 1`).get(recordingId, summarizationId)
+      if (!remoteValue) throw failure("validation", "The current Pocket Notes version is not present in the local archive.")
+      const remote = asRow(remoteValue)
+      const localValue = database.prepare(`SELECT revision_id,content_hash,base_remote_hash,captured_at,markdown FROM local_notes_revisions
+        WHERE recording_id=? AND summarization_id=? ORDER BY revision_id DESC LIMIT 1`).get(recordingId, summarizationId)
+      const local = localValue ? asRow(localValue) : undefined
+      const remoteHash = String(remote.content_hash)
+      const expectedHash = local ? String(local.content_hash) : remoteHash
+      const baseRemoteHash = local ? String(local.base_remote_hash) : remoteHash
+      const markdown = String(local?.markdown ?? remote.markdown)
+      const withinEditorLimit = Buffer.byteLength(markdown, "utf8") <= 2 * 1024 * 1024
+      return {
+        summarizationId, source: local ? "local" as const : "pocket" as const, expectedHash, baseRemoteHash, remoteHash,
+        localRevisionId: local ? Number(local.revision_id) : null, changedRemotely: baseRemoteHash !== remoteHash,
+        textLength: markdown.length, markdown: withinEditorLimit ? markdown : null
+      }
+    }),
+    uiListLocalNotesHistory: (recordingId, summarizationId, limit, offset) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      requireSafeUiId(summarizationId)
+      uiPage(limit, offset)
+      const where = "recording_id=? AND summarization_id=?"
+      const total = Number(asRow(database.prepare(`SELECT COUNT(*) AS total FROM local_notes_revisions WHERE ${where}`).get(recordingId, summarizationId)).total ?? 0)
+      const rows = database.prepare(`SELECT revision_id,content_hash,previous_hash,base_remote_hash,captured_at,length(markdown) AS text_length
+        FROM local_notes_revisions WHERE ${where} ORDER BY revision_id DESC LIMIT ? OFFSET ?`).all(recordingId, summarizationId, limit, offset) as SqlRow[]
+      return { revisions: rows.map(uiLocalRevision), pagination: { limit, offset, total } }
+    }),
+    uiReadLocalNotesPage: (recordingId, revisionId, offset, limit) => databaseEffect(() => {
+      requireSafeUiId(recordingId)
+      uiPage(1, offset, 1)
+      uiPage(limit, 0, 20000)
+      const value = database.prepare(`SELECT revision_id,content_hash,previous_hash,base_remote_hash,captured_at,length(markdown) AS text_length,markdown
+        FROM local_notes_revisions WHERE recording_id=? AND revision_id=?`).get(recordingId, revisionId)
+      if (!value) throw failure("validation", "The local Notes revision is not present in the archive.")
+      const row = asRow(value)
+      const fullMarkdown = String(row.markdown)
+      const revision = { ...uiLocalRevision(row), textLength: fullMarkdown.length }
+      const markdown = fullMarkdown.slice(offset, offset + limit)
+      return { revision, markdown, offset, returned: markdown.length, hasMore: offset + markdown.length < fullMarkdown.length }
+    }),
+    uiSaveLocalNotes: (recordingId, summarizationId, expectedHash, markdown) => databaseEffect(() => transaction(database, () => {
+      requireSafeUiId(recordingId)
+      requireSafeUiId(summarizationId)
+      if (!/^[a-f0-9]{64}$/.test(expectedHash)) throw failure("validation", "The local Notes editor needs a valid expected hash.")
+      if (typeof markdown !== "string" || !markdown.trim()) throw failure("validation", "Local Notes cannot be empty.")
+      if (Buffer.byteLength(markdown, "utf8") > 2 * 1024 * 1024) throw failure("validation", "Local Notes exceed the 2 MiB archive limit.")
+      const remoteValue = database.prepare(`SELECT content_hash FROM notes_versions
+        WHERE recording_id=? AND summarization_id=? AND source IN ('backfill','workflow','final')
+        ORDER BY captured_at DESC,version_id DESC LIMIT 1`).get(recordingId, summarizationId)
+      if (!remoteValue) throw failure("validation", "The current Pocket Notes version is not present in the local archive.")
+      const remoteHash = String(asRow(remoteValue).content_hash)
+      const headValue = database.prepare(`SELECT revision_id,content_hash,base_remote_hash FROM local_notes_revisions
+        WHERE recording_id=? AND summarization_id=? ORDER BY revision_id DESC LIMIT 1`).get(recordingId, summarizationId)
+      const head = headValue ? asRow(headValue) : undefined
+      const currentHash = head ? String(head.content_hash) : remoteHash
+      if (expectedHash !== currentHash) throw failure("conflict", "Local Notes changed in another editor. Reload the current version before saving.")
+      const hash = contentHash(markdown)
+      const baseRemoteHash = head ? String(head.base_remote_hash) : remoteHash
+      const capturedAt = utcNow()
+      const result = database.prepare(`INSERT INTO local_notes_revisions(recording_id,summarization_id,parent_revision_id,previous_hash,base_remote_hash,content_hash,captured_at,markdown)
+        VALUES(?,?,?,?,?,?,?,?)`).run(recordingId, summarizationId, head ? Number(head.revision_id) : null, expectedHash, baseRemoteHash, hash, capturedAt, markdown)
+      const revisionId = Number(result.lastInsertRowid)
+      insertSearchDocument(recordingId, "local_notes", `${summarizationId}:${hash}:${revisionId}`, capturedAt, markdown)
+      return { revisionId, hash, previousHash: expectedHash, baseRemoteHash, capturedAt }
+    })),
     readEvent: (eventId) => databaseEffect(() => {
       const value = database.prepare("SELECT event_id,received_at,event_type,recording_id,state,payload_json,raw_body_base64 FROM webhook_events WHERE event_id=?").get(eventId)
       if (!value) throw failure("validation", "The webhook event is not present in the local archive.")

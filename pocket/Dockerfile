@@ -3,6 +3,7 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts --no-audit --no-fund
 COPY tsconfig.json ./
+COPY ui ./ui
 COPY src ./src
 RUN npm run build && npm prune --omit=dev --ignore-scripts --no-audit --no-fund
 
@@ -16,6 +17,7 @@ ENV NODE_ENV=production HOME=/home/node POCKET_HOST=0.0.0.0 POCKET_PORT=9011 \
 COPY --from=build /app/package.json /app/package-lock.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist/src ./dist/src
+COPY --from=build /app/dist/ui ./dist/ui
 USER node
 EXPOSE 9011
 CMD ["node", "dist/src/cli.js", "serve"]

@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>Pocket local archive</title>
+    <link rel="stylesheet" href="/archive/assets/archive-ui.css">
+    <script type="module" src="/archive/assets/archive-ui.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/archive/" aria-label="Pocket local archive home">
+        <span class="brand-mark" aria-hidden="true">P</span>
+        <span><strong>Pocket</strong><small>Local archive</small></span>
+      </a>
+      <div class="topbar-actions">
+        <span id="session-status" class="session-status">Starting local session…</span>
+        <button id="refresh-button" class="button button-primary" type="button" disabled>Refresh from Pocket</button>
+        <button id="logout-button" class="button button-quiet" type="button" hidden>Close session</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="library-panel" aria-label="Saved recordings">
+        <div class="library-heading">
+          <div>
+            <p class="eyebrow">On this device</p>
+            <h1>Recordings</h1>
+          </div>
+          <span id="recording-count" class="count-badge">0</span>
+        </div>
+        <form id="search-form" class="search-form">
+          <label class="visually-hidden" for="search-input">Search saved recordings</label>
+          <input id="search-input" name="q" type="search" autocomplete="off" placeholder="Search saved text…" maxlength="256">
+          <button class="button button-secondary" type="submit">Search</button>
+        </form>
+        <p class="search-hint">Searches titles, Notes and transcripts saved locally.</p>
+        <div id="recording-list" class="recording-list" aria-live="polite"></div>
+        <button id="load-recordings" class="button button-more" type="button" hidden>Load more recordings</button>
+      </aside>
+
+      <section id="detail-panel" class="detail-panel" aria-label="Recording details" aria-live="polite">
+        <div class="empty-state">
+          <div class="empty-mark" aria-hidden="true">✳</div>
+          <p class="eyebrow">Your saved Pocket data</p>
+          <h2>Choose a recording</h2>
+          <p>Browse the local archive without contacting Pocket. Use <strong>Refresh from Pocket</strong> when you want to add a newer snapshot.</p>
+        </div>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <span>Browsing reads saved data only.</span>
+      <span>Local Notes revisions stay on this device and are never sent to Pocket.</span>
+    </footer>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

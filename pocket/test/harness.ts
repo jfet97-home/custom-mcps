@@ -9,6 +9,8 @@ import { HttpAuthorization } from "../src/http-auth.js"
 import { ArchiveLive } from "../src/archive.js"
 import { ArchiveWorkflowLive } from "../src/archive-workflow.js"
 import { fixture } from "./fixture.js"
+import { MeetingQuery } from "../src/meeting-query.js"
+import { failure } from "../src/core.js"
 
 const dataDir = mkdtempSync(join(tmpdir(), "pocket-mcp-test-"))
 chmodSync(dataDir, 0o700)
@@ -18,5 +20,9 @@ const pocketAndSettings = Layer.merge(fixture().layer, settings)
 const archive = ArchiveLive.pipe(Layer.provide(settings))
 const services = Layer.merge(pocketAndSettings, archive)
 const workflow = ArchiveWorkflowLive.pipe(Layer.provide(services))
-const live = Layer.merge(services, workflow)
+const query = Layer.succeed(MeetingQuery, {
+  query: () => Effect.fail(failure("permission", "Fixture queries do not create remote chats.")),
+  lookup: () => Effect.fail(failure("validation", "No fixture query exists."))
+})
+const live = Layer.mergeAll(services, workflow, query)
 NodeRuntime.runMain(serverProgram(process.argv[2] !== "http", Layer.succeed(HttpAuthorization, { token: Redacted.make("test-http-secret") })).pipe(Effect.provide(live)), { disableErrorReporting: true })

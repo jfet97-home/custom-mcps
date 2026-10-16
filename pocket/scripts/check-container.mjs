@@ -33,9 +33,27 @@ try {
   assert.deepEqual(JSON.parse(auth.stdout), { authenticated: false })
   const missing = await fetch(`${url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })
   assert.equal(missing.status, 401)
+  const ui = await fetch(`${url}/archive/`)
+  assert.equal(ui.status, 200)
+  assert.ok(ui.headers.get("content-security-policy").includes("frame-ancestors 'none'"))
+  assert.ok((await ui.text()).includes("Pocket local archive"))
+  const bundle = await fetch(`${url}/archive/assets/archive-ui.js`)
+  assert.equal(bundle.status, 200)
+  assert.ok((await bundle.text()).length > 1000)
+  assert.equal((await fetch(`${url}/archive/api/recordings`, { headers: { "x-pocket-ui": "1" } })).status, 401)
   const fileCheck = await docker("exec", name, "node", "--input-type=module", "-e", `
     import { Redacted } from 'effect';
+    import { writeFileSync, linkSync, readFileSync, unlinkSync } from 'node:fs';
     import { readSessionFile, saveSessionFile } from './dist/src/secrets.js';
+    const original = '/data/.query-journal-link-probe';
+    const linked = original + '-linked';
+    try {
+      writeFileSync(original, 'fixture', { mode: 0o600, flag: 'wx' });
+      linkSync(original, linked);
+      if (readFileSync(linked, 'utf8') !== 'fixture') process.exit(1);
+    } finally {
+      for (const path of [linked, original]) try { unlinkSync(path); } catch {}
+    }
     const value = {apiKey:'fixture',projectId:'fixture',userId:'fixture',email:'fixture@example.com',refreshToken:'fixture'};
     await saveSessionFile('/data', Redacted.make(value));
     if (Redacted.value(await readSessionFile('/data')).refreshToken !== 'fixture') process.exit(1);

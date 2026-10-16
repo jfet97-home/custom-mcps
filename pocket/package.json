@@ -3,16 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=24" },
-  "bin": { "pocket-mcp": "dist/src/cli.js" },
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "pocket-mcp": "dist/src/cli.js"
+  },
   "scripts": {
-    "build": "tsc",
-    "typecheck": "tsc --noEmit",
-    "lint": "eslint src test scripts",
-    "lint:fix": "eslint src test scripts --fix",
+    "build": "tsc && npm run build:ui",
+    "build:ui": "mkdir -p dist/ui && esbuild ui/archive-ui.ts --bundle --minify --target=es2022 --outfile=dist/ui/archive-ui.js && cp ui/index.html ui/archive-ui.css dist/ui/",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.ui.json",
+    "lint": "eslint src test scripts ui",
+    "lint:fix": "eslint src test scripts ui --fix",
     "test": "npm run build && node --test dist/test/*.test.js",
     "test:container": "node scripts/check-container.mjs",
     "start": "node dist/src/cli.js serve",
+    "archive:open": "node dist/src/cli.js archive open",
     "login": "node dist/src/cli.js login",
     "install-service": "node dist/src/install.js",
     "verify-live": "node dist/src/verify-live.js"
@@ -29,9 +35,12 @@
     "@modelcontextprotocol/sdk": "1.32.1",
     "@types/node": "24.19.1",
     "@types/proper-lockfile": "4.1.4",
+    "esbuild": "0.28.2",
     "eslint": "10.12.0",
     "typescript": "5.9.3",
     "typescript-eslint": "8.71.1"
   },
-  "overrides": { "@effect/platform-node-shared": "4.0.1" }
+  "overrides": {
+    "@effect/platform-node-shared": "4.0.1"
+  }
 }
