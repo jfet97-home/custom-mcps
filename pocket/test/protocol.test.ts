@@ -45,7 +45,7 @@ test("native HTTP protocol works and rejects browser Origins and foreign Host he
       socket.close(() => resolve(address.port))
     })
   })
-  const child = spawn(process.execPath, [harness, "http"], { env: { ...process.env, POCKET_PORT: String(port) }, stdio: "ignore" })
+  const child = spawn(process.execPath, [harness, "http"], { env: { ...process.env, POCKET_PORT: String(port), POCKET_HOST: "0.0.0.0" }, stdio: "ignore" })
   const url = `http://127.0.0.1:${port}`
   const client = new Client({ name: "http-test", version: "1" })
   try {
@@ -65,7 +65,7 @@ test("native HTTP protocol works and rejects browser Origins and foreign Host he
     for (const method of ["GET", "DELETE", "POST"]) assert.equal((await fetch(`${url}/mcp`, { method, ...(method === "POST" ? { headers: { "content-type": "application/json" }, body: "{}" } : {}) })).status, 401)
     assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { authorization: "Bearer wrong", "content-type": "application/json" }, body: "{}" })).status, 401)
     const alias = await new Promise<number>((resolve, reject) => {
-      const req = request(`${url}/mcp`, { method: "POST", headers: { host: "host.docker.internal", authorization: "Bearer test-http-secret", "content-type": "application/json" } }, (response) => { response.resume(); resolve(response.statusCode ?? 0) })
+      const req = request(`${url}/mcp`, { method: "POST", headers: { host: "pocket-mcp:9011", authorization: "Bearer test-http-secret", "content-type": "application/json" } }, (response) => { response.resume(); resolve(response.statusCode ?? 0) })
       req.on("error", reject); req.end("{}")
     })
     assert.notEqual(alias, 401)

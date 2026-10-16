@@ -30,6 +30,6 @@ export const authorized = (header: string | undefined, token: Redacted.Redacted<
 export class HttpAuthorization extends Context.Service<HttpAuthorization, { readonly token: Redacted.Redacted<string> }>()("pocket/HttpAuthorization") {}
 export const HttpAuthorizationLive = Layer.effect(HttpAuthorization, Effect.gen(function*() {
   const settings = yield* Settings
-  const token = yield* attempt(() => readHttpToken(settings.dataDir), "configuration", "The Pocket HTTP secret is missing or inaccessible. Run the service installer first.")
+  const token = yield* attempt(() => readHttpToken(settings.dataDir), "configuration", "The Pocket HTTP secret is missing or inaccessible. Run install-service before starting HTTP.")
   return { token }
 }))

@@ -12,7 +12,7 @@ service's source and deployment files here, with private runtime state outside G
 | --- | --- | --- | --- |
 | Microsoft Teams | [teams/](teams/) | 9006 | Private host environment settings and the `teams-mcp_auth` Docker volume |
 | Atlassian Media | [atlassian-media/](atlassian-media/) | 9005 | Private runtime environment on the Docker container |
-| Pocket | [pocket/](pocket/) | 9011 | macOS Keychain; native LaunchAgent beside the Docker gateway |
+| Pocket | [pocket/](pocket/) | 9011 | Private host session file mounted into Docker |
 | REA | [rea/](rea/) | 9012, Docker network only | Private `~/.config/rea-mcp/service.env` and MCPX server configuration |
 
 ## Development
@@ -27,7 +27,7 @@ and `npm test` inside `atlassian-media/`. See its [README](atlassian-media/READM
 
 For Pocket, use the same npm checks inside `pocket/`. Its native Effect v4 MCP
 supports complete Notes/transcript reads and guarded writes. Run its dedicated
-login command once, then install the native Mac service; see [Pocket setup](pocket/README.md).
+host browser login once, then deploy its Docker service; see [Pocket setup](pocket/README.md).
 
 REA contains Docker deployment configuration for pinned REA and Supergateway
 packages. Validate Compose and Docker build checks, then build and verify a
@@ -45,9 +45,10 @@ Real credentials, token caches, private environment files and deployment notes
 are excluded from Git. A new checkout requires local configuration before starting
 containers; source publication does not publish an authenticated deployment.
 
-Pocket runs natively as `com.jfet97.pocket-mcp` so it can use macOS Keychain
-directly. MCPX connects to `http://host.docker.internal:9011/mcp`. Its private
-backups and deployment state stay outside the checkout.
+Pocket runs from `pocket/compose.yaml` in Docker, with native MCP HTTP and
+`restart: unless-stopped`. MCPX connects to `http://pocket-mcp:9011/mcp` on the
+shared network. The private session, HTTP secret and backups stay in the host
+data directory outside Git; no Pocket LaunchAgent or transport adapter is used.
 
 REA runs directly from `rea/compose.yaml` in this checkout. MCPX connects to
 `http://rea-mcp:9012/mcp` over the shared Docker network. The container publishes

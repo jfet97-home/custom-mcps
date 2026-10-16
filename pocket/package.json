@@ -8,9 +8,10 @@
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint src test",
-    "lint:fix": "eslint src test --fix",
+    "lint": "eslint src test scripts",
+    "lint:fix": "eslint src test scripts --fix",
     "test": "npm run build && node --test dist/test/*.test.js",
+    "test:container": "node scripts/check-container.mjs",
     "start": "node dist/src/cli.js serve",
     "login": "node dist/src/cli.js login",
     "install-service": "node dist/src/install.js",

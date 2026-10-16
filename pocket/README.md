@@ -2,121 +2,151 @@
 
 Personal Pocket integration with complete original AI Notes and transcripts,
 Markdown saving, transcript corrections and global action-item updates. Uses
-TypeScript and Effect **4.0.1**, including native MCP tools and transports from
-`effect/ai`, `Context.Service`, schemas, configuration, layers, locks and scoped
-process/server cleanup. The Effect Node adapters and shared adapter are pinned
-to the same version; commit `package-lock.json` with dependency updates.
+TypeScript and Effect **4.0.1**, including native MCP tools and Streamable HTTP
+from `effect/ai`. All Effect adapters are pinned to the same version; commit
+`package-lock.json` with dependency changes.
 
-## Login and session lifecycle
+## Runtime and private state
+
+The service runs in **Docker**, directly serving MCP HTTP. No Supergateway,
+transport proxy or native Pocket LaunchAgent is used. Its source, Dockerfile,
+Compose and dependency pins live in this component.
+
+- Compose project and service: `pocket-mcp`.
+- Docker context: `desktop-linux` by default.
+- MCPX upstream: `http://pocket-mcp:9011/mcp` on `lunar-mcpx_default`.
+- Host endpoint: `http://127.0.0.1:9011/mcp`; public health: `/health`.
+- Private host data: `~/Library/Application Support/pocket-mcp`, mounted at `/data`.
+- Session: `/data/firebase-session.json`; HTTP bearer secret: `/data/http-token`.
+- Backups: `/data/backups`, visible in the same host directory as before.
+
+Private directories use mode `0700`; session, secret and backup files use `0600`.
+The persistent refresh credential is an unencrypted, owner-only file, outside
+Git and build contexts. Renewal writes a new file, syncs it and atomically renames
+it. The data directory is writable because Firebase can rotate the refresh token.
+The server uses a private process lock in that same directory to coordinate
+renewals, login and logout across host and container processes.
+
+The image uses a digest-pinned Node 24 base. Compose runs it with the data owner's
+UID/GID, a read-only root filesystem, a temporary `/tmp`, dropped capabilities
+and a 90-second graceful shutdown period. The defaults `501:20` match this Mac;
+set `LOCAL_UID` and `LOCAL_GID` for another host. The deployment command derives
+both automatically. Keep the source bind mount outside the container; the image
+contains built application code and pinned production dependencies only.
+
+## Login and renewal
+
+For a fresh account session, run the browser bootstrap **on the host**:
 
 ```sh
 npm ci
 npm run build
-node dist/src/cli.js login
+npm run login
+```
+
+This is an on-demand command, not a host background service. It opens the real
+Pocket website in a fresh dedicated Chrome profile and waits for normal Google,
+Apple or email login. It reads Firebase persistence only for that profile and
+Pocket's origin, checking IndexedDB before localStorage. It discovers the current
+Firebase project configuration from Pocket's client, verifies renewal and Pocket
+account identity, then saves the refresh credential directly in the private
+session file. No personal Pocket API key or pasted short-lived token is needed.
+No account creation or provider linking is performed.
+
+The dedicated browser and its profile are cleaned on completion or cancellation.
+Personal browser profiles are never read. Set `POCKET_CHROME_PATH` when Chrome
+is installed elsewhere. If a browser cannot be stopped, cleanup retains its
+private profile and reports the path. Close that dedicated window before retrying.
+The temporary loopback debugging port exists only during login.
+
+The container renews ID tokens two minutes before expiry, shares renewal among
+concurrent callers and persists rotated refresh credentials. After a later host
+login, the running server notices the changed file on its next operation.
+
+```sh
+docker --context desktop-linux compose exec -T pocket-mcp node dist/src/cli.js auth status
+```
+
+`auth status` performs a real renewal and reports identity/expiry without secrets.
+A missing or revoked session returns `authenticated=false`; network/storage
+failures remain errors. With explicit intent to sign this integration out:
+
+```sh
+docker --context desktop-linux compose exec -T pocket-mcp node dist/src/cli.js logout
+```
+
+Logout removes this component's session file and is observed by the running
+server's cache. It does not revoke other Pocket application sessions.
+
+### Migrate an earlier Keychain installation
+
+Stop the previous `com.jfet97.pocket-mcp` LaunchAgent before migrating so it cannot
+renew against a separate credential store. On the Mac, after building this source:
+
+```sh
+node dist/src/cli.js auth migrate-keychain
 node dist/src/cli.js auth status
 ```
 
-`login` opens the real Pocket website in a **fresh dedicated Chrome profile**, waits
-for the normal Google, Apple or email login, and reads Firebase persistence
-only in that profile and the Pocket origin. It checks IndexedDB first and
-localStorage second. The active Firebase Web configuration is discovered from
-Pocket's current HTML/client bundle and matched to the authenticated session.
-This Web API key identifies Pocket's Firebase project; it is not a personal
-Pocket API key. No account creation or provider linking is performed.
+Migration reads only Keychain service `pocket-personal-mcp`, account
+`firebase-session`, and writes the private session file without printing its
+contents. It refuses to overwrite an existing file session. If already migrated,
+check `auth status` instead. Verify the Docker deployment and a real MCPX read
+before removing the retired Keychain entry, LaunchAgent plist and CLI wrapper.
+Preserve backups and recording content during that cleanup.
 
-After verifying renewal and access to the Pocket account, the command saves
-the refresh credential in the operating system secret store. On macOS this is
-Keychain, service `pocket-personal-mcp`, account `firebase-session`. The browser
-closes and its dedicated profile is deleted on success, failure and cancellation,
-after waiting for its process group to exit. Personal
-browser profiles are never read. Set `POCKET_CHROME_PATH` when Chrome is installed
-elsewhere. If the browser cannot be stopped, cleanup reports a failure and retains
-the private profile for inspection rather than removing files under a running process.
-The loopback debugging port is temporary and accessible to other local processes
-during login; it is closed with the dedicated browser. Normal terminal hang-up
-uses the same cleanup. After a forced kill, close the leftover dedicated window
-and rerun login: process markers allow safe stale-profile removal, without
-terminating processes whose identity cannot be established. Legacy profiles are
-removed after their browser is closed.
+## Deploy and connect
 
-The server renews ID tokens two minutes before expiry, shares one renewal across
-concurrent calls, and persists refresh-token rotation. A private cross-process
-lock at the default private data directory coordinates renewal, login and logout,
-even when instances use different `POCKET_DATA_DIR` settings. If that location is
-unusable, set the same `POCKET_SESSION_LOCK_DIR` on every instance. The installer
-preserves it in both the service and CLI wrapper. Cached calls check
-Keychain without acquiring that lock. `auth status` performs a real renewal
-in a fresh process; it reports identity and expiry without credentials.
+Commit the component source, then run:
 
 ```sh
-node dist/src/cli.js logout
-```
-
-Logout deletes the component's saved credential. The running server checks the
-store before using its token cache and therefore observes logout on its next
-operation. `auth status` reports `authenticated=false` for a missing or revoked
-session; network/storage failures remain errors. Logout does not revoke other
-Pocket application sessions. A revoked or
-expired Firebase session produces an `authentication` error requesting login.
-There are no token/password inputs or interactive approvals in MCP tools.
-
-## Run and connect
-
-```sh
-node dist/src/cli.js stdio
-node dist/src/cli.js serve
-```
-
-HTTP is Streamable HTTP at `http://127.0.0.1:9011/mcp`; health is `/health`.
-The service binds only to loopback, rejects browser Origins and foreign Host
-headers, and accepts `host.docker.internal` so the existing Docker MCPX gateway
-can reach it. MCP requests also require a random per-install bearer secret from
-`<POCKET_DATA_DIR>/http-token` (owned regular file, mode `0600`). The public health
-route contains no account information. `install-service` creates the secret; for a
-manual HTTP setup call `ensureHttpToken` from the built `http-auth` module first.
-Stdio uses its parent process boundary and does not need this HTTP secret.
-Request bodies are limited to 12 MiB. Logs go to stderr and contain only safe
-status/error messages and write backup IDs/outcomes, never tokens, headers or
-recording content.
-
-The actual Mac deployment is a **native LaunchAgent**, allowing direct Keychain
-access without passing the refresh credential into a container. After committing
-and building the source:
-
-```sh
+npm run build
 npm run install-service
 ```
 
-This installs `com.jfet97.pocket-mcp`, starts it at login, and installs a
-`~/.local/bin/pocket-mcp` wrapper. The installer records the source revision
-privately and refuses uncommitted component changes. It exports the committed
-source into a private temporary build, installs the pinned lockfile, builds from
-empty output, prunes development dependencies and copies the result into a
-read-only versioned release under
-`<POCKET_DATA_DIR>/releases/<commit>`, verifies its manifest, then waits for the old
-process to exit and the replacement to become ready. The running service never
-loads code from the checkout. Node is resolved through a stable absolute path;
-set `POCKET_NODE_PATH` if needed. Version-specific Nix store paths are rejected.
-Add `~/.local/bin` to PATH if needed. Re-run the installer after a committed update.
+`install-service` deploys Docker. It refuses uncommitted component changes, exports
+the selected Git commit into a temporary build context, builds a revision-tagged
+image and starts `pocket/compose.yaml` with `--no-build --wait`. It checks the health
+revision and records image ID, source revision and Compose path in private
+`deployment.json`. The temporary build context is removed. The running container
+loads code from the image, not from the checkout. Set `POCKET_DOCKER_CONTEXT` to
+select another Docker context or `POCKET_DATA_DIR` for another private directory.
 
-Point the MCPX upstream named `pocket` to
-`http://host.docker.internal:9011/mcp` using `streamable-http`. This replaces the
-official upstream while keeping the gateway's other integrations intact. Configure
-its private `Authorization` header as `Bearer <contents of http-token>` through
-local tooling that reads the file directly; never paste the value into chat or
-commit it. The Firebase refresh credential remains exclusively in Keychain.
+The installer creates the HTTP bearer secret if absent. Keep MCPX's `pocket`
+connection using Streamable HTTP at `http://pocket-mcp:9011/mcp`, with its private
+Authorization header read from `http-token`. Never print that value or put it in
+Compose, shell history or Git. Reuse the saved header when moving the endpoint.
+Preserve unrelated MCPX services and its configuration/state volumes.
 
-`POCKET_DATA_DIR` defaults to
-`~/Library/Application Support/pocket-mcp`; `POCKET_PORT` defaults to `9011`.
-Backups, logs and deployment settings stay there, outside Git. Files containing
-content use mode `0600`; private directories use `0700`. Private directories
-inside Git checkouts or final-component symlinks are rejected. No credentials,
-browser profiles or backups belong in Docker contexts; `.dockerignore` uses an
-explicit source allowlist.
+Inside Docker, `POCKET_HOST=0.0.0.0` exposes the service to the shared network;
+the published host port binds only to `127.0.0.1`. Browser Origins and unrecognized
+Host headers are rejected. All MCP requests require the bearer secret, while
+health exposes no identity. The optional local CLI defaults to loopback when run
+outside Docker. Stdio remains available for supported direct use but is not the
+installed transport. Request bodies are limited to 12 MiB, and logs contain safe
+status/error information only.
 
-On Linux, run stdio/HTTP under a user service with an available OS Secret Service.
-The macOS installer and its Keychain storage are not a container deployment;
-there is no container-to-Keychain dependency or automatic credential export.
+### Startup and routine operations
+
+Compose uses `restart: unless-stopped`. On this Mac, the existing
+`dev.docker.autostart` login job starts Docker Desktop; Docker then starts the
+container. A deliberately stopped container stays stopped until explicitly
+started again. No Pocket-specific login job is needed.
+
+Run these from `pocket/`, choosing the requested operation:
+
+```sh
+docker --context desktop-linux compose ps
+docker --context desktop-linux compose logs --tail 50 pocket-mcp
+docker --context desktop-linux compose stop pocket-mcp
+docker --context desktop-linux compose start pocket-mcp
+```
+
+Use `npm run install-service` for an upgrade or recreation so the image remains
+bound to committed source. Do not use `down -v` or remove the private data directory.
+A health check verifies HTTP readiness; verify Firebase renewal and an actual
+read through MCPX separately. A configured restart policy and login job do not
+constitute a reboot test.
 
 ## Tools and editing
 
@@ -191,10 +221,23 @@ npm run typecheck
 npm test
 ```
 
+For the Docker image and its isolated runtime check:
+
+```sh
+docker --context desktop-linux compose config --quiet
+docker --context desktop-linux buildx build --check .
+docker --context desktop-linux build -t pocket-personal-mcp:check .
+POCKET_DOCKER_CONTEXT=desktop-linux npm run test:container
+```
+
+The container check uses temporary fixture state, validates native HTTP and bearer
+protection, and exercises file-session storage under the real non-root UID and
+read-only root filesystem. It removes its own container and fixture directory.
+
 Tests include real stdio and HTTP protocol handshakes/tool calls, typed failures,
 hash conflicts, ID selection, raw transcript indices, private backups, concurrent
 renewal, actual subprocess lock coordination, bearer authentication, login-process
-cleanup, immutable releases, stdio EOF, post-send uncertainty and interrupted
+cleanup, persistent file credentials, stdio EOF, post-send uncertainty and interrupted
 write verification/restoration.
 
 For an explicitly authorized reversible live check on a sample recording:

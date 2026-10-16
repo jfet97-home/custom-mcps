@@ -92,7 +92,7 @@ export const hostAllowed = (host: string | undefined): boolean => {
   try {
     const parsed = new URL(`http://${host}`)
     return !parsed.username && !parsed.password && parsed.pathname === "/" && !parsed.search && !parsed.hash &&
-      ["localhost", "127.0.0.1", "[::1]", "host.docker.internal"].includes(parsed.hostname)
+      ["localhost", "127.0.0.1", "[::1]", "host.docker.internal", "pocket-mcp"].includes(parsed.hostname)
   } catch { return false }
 }
 
@@ -118,10 +118,10 @@ export const serverProgram = (stdio: boolean, authLayer = HttpAuthorizationLive)
       registered, McpServer.layerHttp({ ...options, path: "/mcp", allowedOrigins: [] }), localOnly,
       HttpRouter.add("GET", "/health", Effect.succeed(HttpServerResponse.jsonUnsafe({ service: "pocket-personal", version: "0.1.0", revision: settings.sourceRevision ?? "development", ok: true })))
     ), { disableLogger: true, disableListenLog: true, middleware: (http) => http.pipe(Effect.provideService(HttpServerRequest.MaxBodySize, ByteSize.mebibytes(12))) })
-    .pipe(Layer.provide(authLayer), Layer.provide(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: settings.port })))
+    .pipe(Layer.provide(authLayer), Layer.provide(NodeHttpServer.layer(createServer, { host: settings.host ?? "127.0.0.1", port: settings.port })))
   yield* Effect.scoped(Effect.gen(function*() {
     yield* Layer.build(server)
-    yield* Effect.sync(() => { process.stderr.write(`Pocket MCP ready (127.0.0.1:${settings.port}).\n`) })
+    yield* Effect.sync(() => { process.stderr.write(`Pocket MCP ready (${settings.host ?? "127.0.0.1"}:${settings.port}).\n`) })
     yield* Effect.never
   }))
 }).pipe(Effect.mapError(() => failure("configuration", "Could not start the Pocket MCP transport. Check the configured port and runtime.")), Effect.provideService(Logger.LogToStderr, true))

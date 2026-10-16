@@ -24,6 +24,7 @@ export const decode = <A>(schema: Schema.Codec<A, unknown>, value: unknown): A =
 export class Settings extends Context.Service<Settings, {
   readonly dataDir: string
   readonly port: number
+  readonly host?: string
   readonly sourceRevision?: string
   readonly sessionLockDir?: string
 }>()("pocket/Settings") {}
@@ -34,11 +35,13 @@ export const SettingsLive = Layer.effect(Settings, Effect.gen(function*() {
   const values = yield* Config.all({
     dataDir: Config.withDefault(Config.String("POCKET_DATA_DIR"), defaultDataDir),
     port: Config.withDefault(Config.Int("POCKET_PORT"), 9011),
-    sessionLockDir: Config.withDefault(Config.String("POCKET_SESSION_LOCK_DIR"), defaultDataDir),
+    host: Config.withDefault(Config.String("POCKET_HOST"), "127.0.0.1"),
+    sessionLockDir: Config.withDefault(Config.String("POCKET_SESSION_LOCK_DIR"), ""),
     sourceRevision: Config.withDefault(Config.String("POCKET_SOURCE_REVISION"), "development")
   }).pipe(Effect.mapError(() => failure("configuration", "Invalid Pocket configuration.")))
   if (values.port < 1 || values.port > 65535) return yield* Effect.fail(failure("configuration", "POCKET_PORT must be a valid TCP port."))
-  return { ...values, dataDir: resolve(values.dataDir) }
+  if (!["127.0.0.1", "0.0.0.0"].includes(values.host)) return yield* Effect.fail(failure("configuration", "POCKET_HOST must be 127.0.0.1 or 0.0.0.0."))
+  return { ...values, dataDir: resolve(values.dataDir), sessionLockDir: resolve(values.sessionLockDir || values.dataDir) }
 }))
 
 export const privateDirectory = async (path: string): Promise<void> => {

@@ -3,14 +3,15 @@ import { fileURLToPath } from "node:url"
 import { authorized, ensureHttpToken, readHttpToken } from "../src/http-auth.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer, Redacted } from "effect"
 import { Backups, BackupsLive } from "../src/backups.js"
 import { Settings } from "../src/core.js"
-import { withSessionLock } from "../src/secrets.js"
-import { launchAgentPlist, stageRelease } from "../src/install.js"
+import { makeFileSecretStorage, readSessionFile, saveSessionFile, sessionPath, withSessionLock } from "../src/secrets.js"
+import { makeSessionLive, Session } from "../src/session.js"
+import { SecretStorage } from "../src/secrets.js"
 
 test("private backup content is recoverable with restrictive permissions outside the source tree", async () => {
   const dataDir = await mkdtemp(join(tmpdir(), "pocket-backups-test-"))
@@ -36,13 +37,6 @@ test("independent runtimes serialize the shared session lock without reading Key
     assert.ok(trace[0]?.endsWith(":start"))
     assert.equal(trace[1], trace[0]?.replace(":start", ":end"))
   } finally { await rm(dataDir, { recursive: true, force: true }) }
-})
-
-test("LaunchAgent configuration escapes paths and contains no session or refresh-token fields", () => {
-  const plist = launchAgentPlist({ node: "/node", entry: "/repo/a&b/cli.js", root: "/repo/a&b", dataDir: "/private/state", port: 9011 })
-  assert.ok(plist.includes("a&amp;b"))
-  assert.ok(!plist.includes("refreshToken"))
-  assert.ok(plist.includes("<key>KeepAlive</key><true/>"))
 })
 
 test("separate processes serialize the renewable-session lock", async () => {
@@ -74,27 +68,45 @@ test("HTTP secret permissions and constant-time bearer validation fail closed", 
   } finally { await rm(dataDir, { recursive: true, force: true }) }
 })
 
-test("versioned releases are independent of subsequent checkout edits and detect release tampering", async () => {
-  const dataDir = await mkdtemp(join(tmpdir(), "pocket-release-test-"))
-  const source = join(dataDir, "source")
-  let root: string | undefined
+test("file sessions persist rotated credentials across runtimes and running caches observe logout", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pocket-file-session-"))
+  const credential = { apiKey: "project-key", projectId: "test-project", userId: "user-1", email: "test@example.com", refreshToken: "original" }
+  const token = `header.${Buffer.from(JSON.stringify({ aud: credential.projectId, iss: `https://securetoken.google.com/${credential.projectId}`, sub: credential.userId })).toString("base64url")}.signature`
   try {
-    await mkdir(join(source, "dist"), { recursive: true })
-    await mkdir(join(source, "node_modules"))
-    await writeFile(join(source, "dist", "cli.js"), "original")
-    await writeFile(join(source, "package.json"), "{}")
-    await writeFile(join(source, "package-lock.json"), "{}")
-    root = await stageRelease(source, dataDir, "a".repeat(40))
-    await writeFile(join(source, "dist", "cli.js"), "later edit")
-    assert.equal(await readFile(join(root, "dist", "cli.js"), "utf8"), "original")
-    assert.equal(await stageRelease(source, dataDir, "a".repeat(40)), root)
-    await chmod(join(root, "dist", "cli.js"), 0o600)
-    await writeFile(join(root, "dist", "cli.js"), "tampered")
-    await assert.rejects(stageRelease(source, dataDir, "a".repeat(40)))
-  } finally {
-    if (root) for (const path of [root, join(root, "dist"), join(root, "node_modules")]) await chmod(path, 0o700)
-    await rm(dataDir, { recursive: true, force: true })
-  }
+    assert.equal(await readSessionFile(dataDir), null)
+    await saveSessionFile(dataDir, Redacted.make(credential))
+    assert.equal((await stat(sessionPath(dataDir))).mode & 0o777, 0o600)
+    const secrets = makeFileSecretStorage(dataDir)
+    const live = makeSessionLive(async () => Response.json({ id_token: token, refresh_token: "rotated", expires_in: "3600", user_id: credential.userId }))
+      .pipe(Layer.provide(Layer.succeed(SecretStorage, secrets)))
+    await Effect.runPromise(Effect.gen(function*() {
+      const session = yield* Session
+      yield* session.token
+      const freshStore = makeFileSecretStorage(dataDir)
+      const persisted = yield* freshStore.load
+      assert.equal(persisted && Redacted.value(persisted).refreshToken, "rotated")
+      yield* freshStore.withLock(freshStore.remove)
+      assert.equal((yield* session.status).authenticated, false)
+    }).pipe(Effect.provide(live)))
+  } finally { await rm(dataDir, { recursive: true, force: true }) }
+})
+
+test("file credentials reject public permissions and symlinks without replacing the target", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pocket-file-permissions-"))
+  const credential = Redacted.make({ apiKey: "key", projectId: "project", userId: "user", email: "test@example.com", refreshToken: "private-value" })
+  try {
+    await saveSessionFile(dataDir, credential)
+    await chmod(sessionPath(dataDir), 0o644)
+    await assert.rejects(readSessionFile(dataDir))
+    await assert.rejects(saveSessionFile(dataDir, credential))
+    await rm(sessionPath(dataDir))
+    const target = join(dataDir, "unrelated")
+    await writeFile(target, "untouched", { mode: 0o600 })
+    await symlink(target, sessionPath(dataDir))
+    await assert.rejects(readSessionFile(dataDir))
+    await assert.rejects(saveSessionFile(dataDir, credential))
+    assert.equal(await readFile(target, "utf8"), "untouched")
+  } finally { await rm(dataDir, { recursive: true, force: true }) }
 })
 
 

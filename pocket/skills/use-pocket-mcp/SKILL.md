@@ -73,12 +73,13 @@ someone else's changes. Errors after backup creation identify that backup.
 
 ## Authentication and recovery
 
-The Mac service renews Firebase sessions from macOS Keychain automatically. No
-personal Pocket API key or pasted short-lived ID token is needed. For an auth
-error, use `pocket-mcp auth status`. If login is missing/revoked, run
-`pocket-mcp login` and let the user sign in normally in its fresh dedicated Chrome
-window. Never read existing personal browser profiles or request tokens in chat.
-`pocket-mcp logout` removes this service's credential and needs user intent.
+The Docker service renews Firebase sessions automatically from its private
+persistent session file. No personal Pocket API key or pasted short-lived token
+is needed. For an auth error, run the documented container `auth status` command.
+If login is missing/revoked, use the README's on-demand host browser login and let
+the user sign in normally in its fresh dedicated Chrome window. Never read
+personal browser profiles or request tokens in chat. Logout removes this
+service's credential and needs user intent.
 
 Connection failure is separate from account authentication. If the service has
 restarted, permitted targeted MCPX reconnect can restore its saved connection;
@@ -90,6 +91,6 @@ tools. Internal Pocket APIs can change; report unsupported responses rather than
 inventing alternative endpoints. Action-item mutations have fixture coverage;
 Notes/transcript saves and restoration have been verified live through MCPX.
 
-For local service installation, Keychain/HTTP-secret configuration, private
+For Docker service installation, session/HTTP-secret configuration, private
 backup paths and source maintenance, use the committed `pocket/README.md` in
 `jfet97-home/custom-mcps`. Ordinary content tasks need no checkout or Docker work.

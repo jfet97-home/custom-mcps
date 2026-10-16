@@ -179,5 +179,5 @@ export const login = Effect.gen(function*() {
     return renewed
   }))
   const value = Redacted.value(renewed.credential)
-  return { authenticated: true, userId: value.userId, email: value.email, storage: process.platform === "darwin" ? "macOS Keychain" : "OS credential store" }
+  return { authenticated: true, userId: value.userId, email: value.email, storage: "private session file" }
 })

@@ -1,0 +1,37 @@
+name: pocket-mcp
+
+services:
+  pocket-mcp:
+    build: .
+    image: "${POCKET_IMAGE:-pocket-personal-mcp:local}"
+    init: true
+    restart: unless-stopped
+    user: "${LOCAL_UID:-501}:${LOCAL_GID:-20}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 90s
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=64m
+    volumes:
+      - type: bind
+        source: "${POCKET_DATA_DIR:-${HOME}/Library/Application Support/pocket-mcp}"
+        target: /data
+        bind:
+          create_host_path: false
+    ports: ["127.0.0.1:${POCKET_PORT:-9011}:9011"]
+    networks: [gateway]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:9011/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 5
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+
+networks:
+  gateway:
+    external: true
+    name: "${MCPX_NETWORK:-lunar-mcpx_default}"
