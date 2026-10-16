@@ -25,6 +25,7 @@ export class Settings extends Context.Service<Settings, {
   readonly dataDir: string
   readonly port: number
   readonly sourceRevision?: string
+  readonly sessionLockDir?: string
 }>()("pocket/Settings") {}
 
 export const defaultDataDir = resolve(homedir(), "Library/Application Support/pocket-mcp")
@@ -33,6 +34,7 @@ export const SettingsLive = Layer.effect(Settings, Effect.gen(function*() {
   const values = yield* Config.all({
     dataDir: Config.withDefault(Config.String("POCKET_DATA_DIR"), defaultDataDir),
     port: Config.withDefault(Config.Int("POCKET_PORT"), 9011),
+    sessionLockDir: Config.withDefault(Config.String("POCKET_SESSION_LOCK_DIR"), defaultDataDir),
     sourceRevision: Config.withDefault(Config.String("POCKET_SOURCE_REVISION"), "development")
   }).pipe(Effect.mapError(() => failure("configuration", "Invalid Pocket configuration.")))
   if (values.port < 1 || values.port > 65535) return yield* Effect.fail(failure("configuration", "POCKET_PORT must be a valid TCP port."))

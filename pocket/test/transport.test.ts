@@ -23,3 +23,17 @@ test("reads retry once, uncertain writes never retry, and responses do not leak 
     }).pipe(Effect.provide(layer)))
   }
 })
+
+test("prepared write sessions do not perform token work inside send and verification", async () => {
+  let tokenReads = 0
+  const layer = makePocketTransportLive(async () => Response.json({ ok: true })).pipe(Layer.provide(Layer.succeed(Session, {
+    token: Effect.sync(() => { tokenReads++; return Redacted.make("test-token") }), invalidate: Effect.void, status: Effect.succeed({ authenticated: true })
+  })))
+  await Effect.runPromise(Effect.gen(function*() {
+    const request = yield* (yield* PocketTransport).prepare
+    assert.equal(tokenReads, 1)
+    yield* request("PATCH", "/api/v1/summarize/test/markdown", { markdown: "test" })
+    yield* request("GET", "/api/v1/recordings/test")
+    assert.equal(tokenReads, 1)
+  }).pipe(Effect.provide(layer)))
+})

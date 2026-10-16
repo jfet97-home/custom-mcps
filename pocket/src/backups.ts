@@ -4,8 +4,12 @@ import { join } from "node:path"
 import { Context, Effect, Layer } from "effect"
 import { Settings, attempt, privateDirectory, type PocketError } from "./core.js"
 
+export const canonicalJson = (value: unknown): string => JSON.stringify(value, (_key, item: unknown) =>
+  item !== null && typeof item === "object" && !Array.isArray(item)
+    ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item)
+
 export const contentHash = (value: string | unknown): string => createHash("sha256")
-  .update(typeof value === "string" ? value : JSON.stringify(value))
+  .update(typeof value === "string" ? value : canonicalJson(value))
   .digest("hex")
 
 export class Backups extends Context.Service<Backups, {

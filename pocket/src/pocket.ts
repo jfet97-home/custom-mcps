@@ -3,7 +3,7 @@ import { Backups, contentHash } from "./backups.js"
 import { decode, failure, PocketError } from "./core.js"
 import { Account, ActionItem, ActionPage, Folders, RawActionPage, RecordingPage, SearchPage, Space } from "./contracts.js"
 import { Id, notesFrom, RecordingDetail, transcriptFrom } from "./recording.js"
-import { PocketTransport } from "./transport.js"
+import { PocketTransport, type PreparedRequest } from "./transport.js"
 
 export const checked = <A>(f: () => A): Effect.Effect<A, PocketError> => Effect.try({
   try: f, catch: (error) => error instanceof PocketError ? error : failure("upstream", "Pocket returned an unsupported response.")
@@ -37,7 +37,8 @@ const withBackup = <A, R>(backupId: string, effect: Effect.Effect<A, PocketError
 )
 
 const commitWrite = <A, R>(backupId: string, kind: string, operation: Effect.Effect<A, PocketError, R>) => Effect.uninterruptible(Effect.gen(function*() {
-  const result = yield* operation.pipe(Effect.exit)
+  yield* Effect.sync(() => { process.stderr.write(`${JSON.stringify({ event: "pocket_write", kind, backupId, outcome: "started" })}\n`) })
+  const result = yield* operation.pipe(Effect.timeoutOrElse({ duration: "45 seconds", orElse: () => Effect.fail(failure("uncertain_write", "The protected write/verification deadline expired.")) }), Effect.exit)
   const outcome = result._tag === "Success" ? "verified" : "uncertain"
   yield* Effect.sync(() => { process.stderr.write(`${JSON.stringify({ event: "pocket_write", kind, backupId, outcome })}\n`) })
   if (result._tag === "Failure") {
@@ -88,8 +89,8 @@ const makePocket = Effect.gen(function*() {
     const raw = yield* detail(recordingId)
     return yield* checked(() => transcriptFrom(raw))
   })
-  const actionPageRaw = (input: ActionQuery) => Effect.gen(function*() {
-    const raw = yield* api.request("GET", queryPath(input.query ? "/api/v1/global-action-items/search" : "/api/v1/global-action-items/hierarchy", {
+  const actionPageRaw = (input: ActionQuery, request: PreparedRequest = api.request) => Effect.gen(function*() {
+    const raw = yield* request("GET", queryPath(input.query ? "/api/v1/global-action-items/search" : "/api/v1/global-action-items/hierarchy", {
       query: input.query, recordingId: input.recordingId, limit: input.limit ?? 50, offset: input.offset ?? 0
     }))
     return yield* checked(() => {
@@ -101,10 +102,10 @@ const makePocket = Effect.gen(function*() {
   const actionPage = (input: ActionQuery) => actionPageRaw(input).pipe(Effect.flatMap((page) => checked(() =>
     decode(ActionPage, { items: page.entries.map(({ item }) => item), pagination: page.pagination })
   )))
-  const findAction = (recordingId: string, actionItemId: string) => Effect.gen(function*() {
+  const findAction = (recordingId: string, actionItemId: string, request: PreparedRequest = api.request) => Effect.gen(function*() {
     let offset = 0
     for (let pageNumber = 0; pageNumber < 100; pageNumber++) {
-      const page = yield* actionPageRaw({ recordingId, limit: 100, offset })
+      const page = yield* actionPageRaw({ recordingId, limit: 100, offset }, request)
       const found = page.entries.find(({ item }) => item.id === actionItemId && item.recordingId === recordingId)
       if (found) return found
       const returned = page.pagination.returned
@@ -145,9 +146,10 @@ const makePocket = Effect.gen(function*() {
           requireHash(before.hash, current.hash)
           if (current.rowId !== before.rowId || current.updatedAt !== before.updatedAt) throw failure("conflict", "The Notes changed during preparation. Read them again.")
         })
+        const request = yield* api.prepare
         return yield* commitWrite(backup.backupId, "notes", Effect.gen(function*() {
-          yield* api.request("PATCH", `/api/v1/summarize/${idPath(input.summarizationId)}/markdown`, { markdown: input.markdown })
-          const after = yield* getNotes(input.recordingId, input.summarizationId)
+          yield* request("PATCH", `/api/v1/summarize/${idPath(input.summarizationId)}/markdown`, { markdown: input.markdown })
+          const after = yield* request("GET", `/api/v1/recordings/${idPath(input.recordingId)}?include=all`).pipe(Effect.flatMap((raw) => checked(() => notesFrom(raw, input.summarizationId))))
           if (after.markdown !== input.markdown) return yield* Effect.fail(failure("upstream", "The Notes reread differs from the supplied Markdown."))
           return { recordingId: input.recordingId, hash: after.hash, ...backup, concurrency: "client_side_compare" as const, verified: true as const }
         }))
@@ -172,9 +174,10 @@ const makePocket = Effect.gen(function*() {
       return yield* withBackup(backup.backupId, Effect.gen(function*() {
         const current = yield* getTranscript(input.recordingId)
         yield* checked(() => requireHash(before.hash, current.hash))
+        const request = yield* api.prepare
         return yield* commitWrite(backup.backupId, "transcript", Effect.gen(function*() {
-          yield* api.request("POST", `/api/v1/transcript-edit/${idPath(input.recordingId)}/batch`, { actions: input.corrections.map((correction) => ({ type: "edit_text", ...correction })) })
-          const after = yield* getTranscript(input.recordingId)
+          yield* request("POST", `/api/v1/transcript-edit/${idPath(input.recordingId)}/batch`, { actions: input.corrections.map((correction) => ({ type: "edit_text", ...correction })) })
+          const after = yield* request("GET", `/api/v1/recordings/${idPath(input.recordingId)}?include=all`).pipe(Effect.flatMap((raw) => checked(() => transcriptFrom(raw))))
           const corrections = new Map(input.corrections.map((c) => [c.segmentIndex, c.text]))
           const expected = before.segments.map((segment) => corrections.has(segment.segmentIndex) ? { ...segment, text: corrections.get(segment.segmentIndex)!, originalText: corrections.get(segment.segmentIndex)! } : segment)
           if (after.transcriptionId !== before.transcriptionId || contentHash(after.segments) !== contentHash(expected)) return yield* Effect.fail(failure("upstream", "The complete transcript reread differs from the expected correction batch."))
@@ -196,9 +199,10 @@ const makePocket = Effect.gen(function*() {
         const body = input.completed === true ? {} : input.completed === false ? { status: "TODO" } : {
           ...(input.title === undefined ? {} : { title: input.title }), ...(input.dueDate === undefined ? {} : { dueDate: input.dueDate })
         }
+        const request = yield* api.prepare
         return yield* commitWrite(backup.backupId, "action_item", Effect.gen(function*() {
-          yield* api.request("PATCH", `/api/v1/global-action-items/${idPath(input.actionItemId)}${input.completed === true ? "/complete" : ""}`, body)
-          const after = (yield* findAction(input.recordingId, input.actionItemId)).item
+          yield* request("PATCH", `/api/v1/global-action-items/${idPath(input.actionItemId)}${input.completed === true ? "/complete" : ""}`, body)
+          const after = (yield* findAction(input.recordingId, input.actionItemId, request)).item
           if (input.title !== undefined && input.title !== after.title || !sameDueDate(input.dueDate, after.dueDate) || input.completed !== undefined && input.completed !== actionCompleted(after)) return yield* Effect.fail(failure("upstream", "The action-item reread differs from the intended change."))
           return { recordingId: input.recordingId, hash: after.hash, ...backup, concurrency: "client_side_compare" as const, verified: true as const }
         }))

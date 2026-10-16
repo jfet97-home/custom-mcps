@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto"
 import { once } from "node:events"
 import { createServer } from "node:net"
 import { join } from "node:path"
-import { rm } from "node:fs/promises"
+import { lstat, readFile, readdir, readlink, rm, writeFile } from "node:fs/promises"
 import { chromium } from "playwright"
 import { Effect, Redacted, Schema } from "effect"
 import { API_ORIGIN, APP_ORIGIN, Settings, attempt, decode, failure, privateDirectory } from "./core.js"
@@ -47,8 +47,35 @@ const stopBrowser = async ({ child, profile }: LoginBrowser): Promise<void> => {
   await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 })
 }
 
+export const cleanLoginProfiles = async (dataDir: string): Promise<void> => {
+  const parent = join(dataDir, "login-profiles")
+  await privateDirectory(parent)
+  for (const name of await readdir(parent)) {
+    if (!/^[a-f0-9-]{36}$/.test(name)) continue
+    const profile = join(parent, name)
+    await privateDirectory(profile)
+    const marker = await readFile(join(profile, "pocket-login-process.json"), "utf8").then((s) => JSON.parse(s) as { pid?: unknown }, () => null)
+    if (!marker || typeof marker.pid !== "number" || !Number.isInteger(marker.pid) || marker.pid < 1) throw failure("storage", `A Pocket login profile has no reliable process marker. Close its dedicated window and inspect ${profile} before removing it.`)
+    if (groupAlive(marker.pid)) throw failure("authentication", `A previous dedicated Pocket login browser is still running. Close that window, then run login again. Profile: ${profile}`)
+    await rm(profile, { recursive: true, force: true })
+  }
+  const legacy = join(dataDir, "browser-profile")
+  if (await lstat(legacy).then(() => true, () => false)) {
+    await privateDirectory(legacy)
+    const lock = await readlink(join(legacy, "SingletonLock")).catch(() => "")
+    const pid = Number(lock.match(/-(\d+)$/)?.[1])
+    if (pid) {
+      let alive = false
+      try { process.kill(pid, 0); alive = true } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error }
+      if (alive) throw failure("authentication", `Close the legacy dedicated Pocket browser before login. Profile: ${legacy}`)
+    }
+    await rm(legacy, { recursive: true, force: true })
+  }
+}
+
 export const withLoginBrowser = <A, E, R>(options: { dataDir: string; executable: string; extraArgs?: string[] }, use: (resource: LoginBrowser) => Effect.Effect<A, E, R>) => Effect.acquireUseRelease(
   attempt(async () => {
+    await cleanLoginProfiles(options.dataDir)
     const parent = join(options.dataDir, "login-profiles")
     await privateDirectory(parent)
     const profile = join(parent, randomUUID())
@@ -60,11 +87,14 @@ export const withLoginBrowser = <A, E, R>(options: { dataDir: string; executable
         "--remote-debugging-address=127.0.0.1", "--no-first-run", "--no-default-browser-check", APP_ORIGIN
       ], { stdio: "ignore", detached: true })
       await once(child, "spawn")
-      return { profile, port, child }
+      const resource = { profile, port, child }
+      try { await writeFile(join(profile, "pocket-login-process.json"), JSON.stringify({ pid: child.pid }), { mode: 0o600, flag: "wx" }) }
+      catch (error) { await stopBrowser(resource); throw error }
+      return resource
     } catch (error) { await rm(profile, { recursive: true, force: true }); throw error }
   }, "configuration", "Chrome could not start. Set POCKET_CHROME_PATH to a normal Chrome executable."),
   use,
-  (resource) => attempt(() => stopBrowser(resource), "storage", "Could not remove the dedicated Pocket login browser profile.").pipe(Effect.orDie)
+  (resource) => attempt(() => stopBrowser(resource), "storage", "Could not remove the dedicated Pocket login browser profile.").pipe(Effect.tapError(() => Effect.sync(() => { process.stderr.write(`Close the dedicated Pocket browser and inspect its retained private profile: ${resource.profile}\n`) })), Effect.orDie)
 )
 
 export const login = Effect.gen(function*() {

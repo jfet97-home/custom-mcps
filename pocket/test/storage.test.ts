@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url"
 import { authorized, ensureHttpToken, readHttpToken } from "../src/http-auth.js"
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Layer, Redacted } from "effect"
@@ -95,4 +95,35 @@ test("versioned releases are independent of subsequent checkout edits and detect
     if (root) for (const path of [root, join(root, "dist"), join(root, "node_modules")]) await chmod(path, 0o700)
     await rm(dataDir, { recursive: true, force: true })
   }
+})
+
+
+test("the session lock completes under an uninterruptible caller", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pocket-masked-lock-"))
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [fileURLToPath(new URL("./lock-worker.js", import.meta.url)), dataDir, "masked", "masked"], { stdio: "ignore" })
+      const timer = setTimeout(() => { child.kill("SIGKILL"); reject(new Error("uninterruptible lock race hung")) }, 3000)
+      child.on("error", reject)
+      child.on("exit", (code) => { clearTimeout(timer); if (code === 0) resolve(); else reject(new Error("lock worker failed")) })
+    })
+  } finally { await rm(dataDir, { recursive: true, force: true }) }
+})
+
+test("losing a session lock fails safely without removing the replacement lock", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pocket-lost-lock-"))
+  let entered = false
+  try {
+    const running = Effect.runPromise(withSessionLock(Effect.gen(function*() { entered = true; yield* Effect.never }), dataDir).pipe(Effect.result))
+    while (!entered) await new Promise((r) => setTimeout(r, 10))
+    const lock = join(dataDir, "session.lock")
+    await rm(lock, { recursive: true })
+    await mkdir(lock)
+    const changed = new Date(Date.now() + 5000)
+    await utimes(lock, changed, changed)
+    const result = await running
+    assert.equal(result._tag, "Failure")
+    if (result._tag === "Failure") assert.equal(result.failure.code, "storage")
+    assert.equal((await stat(lock)).isDirectory(), true)
+  } finally { await rm(dataDir, { recursive: true, force: true }) }
 })

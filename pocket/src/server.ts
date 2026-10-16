@@ -107,9 +107,9 @@ export const serverProgram = (stdio: boolean, authLayer = HttpAuthorizationLive)
   const settings = yield* Settings
   const registered = McpServer.toolkit(toolkit).pipe(Layer.provide(handlers))
   if (stdio) return yield* Effect.scoped(Effect.gen(function*() {
-    const drained = yield* Deferred.make<void>()
+    const drained = yield* Deferred.make<void, PocketError>()
     const original = yield* Stdio.Stdio
-    const observed = Stdio.make({ ...original, stdout: (options) => original.stdout(options).pipe(Sink.onExit((exit) => Exit.isSuccess(exit) ? Deferred.succeed(drained, undefined) : Effect.void)) })
+    const observed = Stdio.make({ ...original, stdout: (options) => original.stdout(options).pipe(Sink.onExit((exit) => Exit.isSuccess(exit) ? Deferred.succeed(drained, undefined) : Deferred.fail(drained, failure("configuration", "The MCP output stream closed before protocol draining completed.")))) })
     yield* Layer.build(Layer.merge(registered, McpServer.layerStdio(options)).pipe(Layer.provide(Layer.succeed(Stdio.Stdio, observed))))
     yield* Effect.sync(() => { process.stderr.write("Pocket MCP ready (stdio).\n") })
     yield* Deferred.await(drained)

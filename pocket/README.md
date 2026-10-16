@@ -33,12 +33,18 @@ browser profiles are never read. Set `POCKET_CHROME_PATH` when Chrome is install
 elsewhere. If the browser cannot be stopped, cleanup reports a failure and retains
 the private profile for inspection rather than removing files under a running process.
 The loopback debugging port is temporary and accessible to other local processes
-during login; it is closed with the dedicated browser.
+during login; it is closed with the dedicated browser. Normal terminal hang-up
+uses the same cleanup. After a forced kill, close the leftover dedicated window
+and rerun login: process markers allow safe stale-profile removal, without
+terminating processes whose identity cannot be established. Legacy profiles are
+removed after their browser is closed.
 
 The server renews ID tokens two minutes before expiry, shares one renewal across
 concurrent calls, and persists refresh-token rotation. A private cross-process
 lock at the default private data directory coordinates renewal, login and logout,
-even when instances use different `POCKET_DATA_DIR` settings. Cached calls check
+even when instances use different `POCKET_DATA_DIR` settings. If that location is
+unusable, set the same `POCKET_SESSION_LOCK_DIR` on every instance. The installer
+preserves it in both the service and CLI wrapper. Cached calls check
 Keychain without acquiring that lock. `auth status` performs a real renewal
 in a fresh process; it reports identity and expiry without credentials.
 
@@ -83,8 +89,10 @@ npm run install-service
 
 This installs `com.jfet97.pocket-mcp`, starts it at login, and installs a
 `~/.local/bin/pocket-mcp` wrapper. The installer records the source revision
-privately and refuses uncommitted component changes. It rebuilds and copies the
-application and dependencies to a read-only versioned release under
+privately and refuses uncommitted component changes. It exports the committed
+source into a private temporary build, installs the pinned lockfile, builds from
+empty output, prunes development dependencies and copies the result into a
+read-only versioned release under
 `<POCKET_DATA_DIR>/releases/<commit>`, verifies its manifest, then waits for the old
 process to exit and the replacement to become ready. The running service never
 loads code from the checkout. Node is resolved through a stable absolute path;
@@ -148,7 +156,8 @@ reconcile it with the intended change before making another write. A timeout can
 mean the server already applied the operation. Every post-send failure is
 `uncertain_write`; failures after backup creation include `backupId`. Sending and
 verification drain on cancellation or a normal service stop, subject to bounded
-network timeouts and the service manager's shutdown limit. A forced kill or power
+network timeouts, a 45-second send/verification deadline and the service manager's
+shutdown limit. Token acquisition/renewal happens before that protected phase. A forced kill or power
 loss can still interrupt them; retain the private backup.
 
 Backups are `<POCKET_DATA_DIR>/backups/<backupId>.json`, containing resource IDs,
@@ -194,7 +203,7 @@ For an explicitly authorized reversible live check on a sample recording:
 npm run verify-live -- RECORDING_ID
 ```
 
-The harness backs up original Notes and the full transcript, compares current
+The harness backs up raw recording responses plus original Notes and the full transcript, compares current
 state, applies a recognizable temporary marker, rereads it, restores the original
 and verifies restoration. Cleanup runs on interruption and uses bounded recovery
 reads. Concurrent content is never blindly overwritten. Pocket updates both
@@ -209,3 +218,17 @@ transcript saves/restoration were verified through MCPX on the sample recording.
 Action-item mutations and nonempty folder/organization-space responses are
 covered by fixtures or client-contract research, not by live mutations on this
 account. Backend edit timestamps can change even when original text is restored.
+
+## Usage skill
+
+The committed [use-pocket-mcp skill](skills/use-pocket-mcp/SKILL.md) describes
+normal gateway discovery, complete reads, expected hashes, raw segment indices
+and uncertain-write recovery. Install and sync it on the Mac with Skillshare:
+
+```sh
+skillshare install ./skills/use-pocket-mcp
+skillshare sync
+```
+
+The skill contains no credentials or private account/recording content. Update
+its installed copy with Skillshare after changing the committed skill source.

@@ -8,6 +8,7 @@ import { chmod, cp, lstat, mkdir, readFile, readdir, readlink, rename, rm, write
 import { Effect } from "effect"
 import { NodeRuntime } from "@effect/platform-node"
 import { Settings, SettingsLive, attempt, failure, privateDirectory } from "./core.js"
+import { contentHash } from "./backups.js"
 import { ensureHttpToken } from "./http-auth.js"
 
 const exec = promisify(execFile)
@@ -15,13 +16,13 @@ const label = "com.jfet97.pocket-mcp"
 const xml = (value: string) => value.replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;")
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`
 
-export const launchAgentPlist = (options: { node: string; entry: string; root: string; dataDir: string; port: number; revision?: string }) => `<?xml version="1.0" encoding="UTF-8"?>
+export const launchAgentPlist = (options: { node: string; entry: string; root: string; dataDir: string; port: number; revision?: string; sessionLockDir?: string }) => `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>${label}</string>
 <key>ProgramArguments</key><array><string>${xml(options.node)}</string><string>${xml(options.entry)}</string><string>serve</string></array>
 <key>WorkingDirectory</key><string>${xml(options.root)}</string>
-<key>EnvironmentVariables</key><dict><key>POCKET_DATA_DIR</key><string>${xml(options.dataDir)}</string><key>POCKET_PORT</key><string>${options.port}</string><key>POCKET_SOURCE_REVISION</key><string>${xml(options.revision ?? "development")}</string></dict>
+<key>EnvironmentVariables</key><dict><key>POCKET_DATA_DIR</key><string>${xml(options.dataDir)}</string><key>POCKET_PORT</key><string>${options.port}</string><key>POCKET_SESSION_LOCK_DIR</key><string>${xml(options.sessionLockDir ?? options.dataDir)}</string><key>POCKET_SOURCE_REVISION</key><string>${xml(options.revision ?? "development")}</string></dict>
 <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
 <key>ThrottleInterval</key><integer>10</integer><key>ExitTimeOut</key><integer>120</integer>
 <key>ProcessType</key><string>Background</string>
@@ -71,7 +72,7 @@ export const stageRelease = async (source: string, dataDir: string, revision: st
   await privateDirectory(staging)
   try {
     for (const name of ["dist", "node_modules", "package.json", "package-lock.json"]) await cp(join(source, name), join(staging, name), { recursive: true, dereference: false, verbatimSymlinks: true })
-    await writeFile(join(staging, "release.json"), JSON.stringify({ revision, hash: await treeHash(staging) }), { mode: 0o600 })
+    await writeFile(join(staging, "release.json"), JSON.stringify({ revision, hash: await treeHash(staging), lockfileHash: contentHash(await readFile(join(staging, "package-lock.json"), "utf8")), buildNodeVersion: process.version }), { mode: 0o600 })
     await rename(staging, target)
     await seal(target)
     return target
@@ -84,18 +85,36 @@ const program = Effect.gen(function*() {
   return yield* attempt(async () => {
     const source = fileURLToPath(new URL("../../", import.meta.url))
     const repository = resolve(source, "..")
-    const status = await exec("git", ["status", "--porcelain", "--", "pocket", "README.md", "AGENTS.md"], { cwd: repository })
+    const status = await exec("git", ["status", "--porcelain", "--", "pocket"], { cwd: repository })
     if (status.stdout.trim()) throw failure("configuration", "Commit the Pocket source before installing the service.")
     const revision = (await exec("git", ["rev-parse", "HEAD"], { cwd: source })).stdout.trim()
-    await exec("npm", ["run", "build"], { cwd: source })
     const after = (await exec("git", ["rev-parse", "HEAD"], { cwd: source })).stdout.trim()
     if (after !== revision || (await exec("git", ["status", "--porcelain", "--", "pocket"], { cwd: repository })).stdout.trim()) throw failure("configuration", "Pocket source changed while preparing deployment.")
     await privateDirectory(settings.dataDir)
     await ensureHttpToken(settings.dataDir)
-    const root = await stageRelease(source, settings.dataDir, revision)
+    const builds = join(settings.dataDir, "builds")
+    await privateDirectory(builds)
+    const build = join(builds, randomUUID())
+    await privateDirectory(build)
+    let root: string
+    try {
+      const archive = await exec("git", ["archive", "--format=tar", revision, "pocket"], { cwd: repository, encoding: "buffer", maxBuffer: 16 * 1024 * 1024 })
+      const archivePath = join(build, "source.tar")
+      await writeFile(archivePath, archive.stdout, { mode: 0o600 })
+      await exec("/usr/bin/tar", ["-xf", archivePath, "-C", build])
+      const exported = join(build, "pocket")
+      const options = { cwd: exported, env: { ...process.env, npm_config_cache: join(build, "npm-cache"), npm_config_update_notifier: "false" }, maxBuffer: 4 * 1024 * 1024 }
+      const lockHash = contentHash(await readFile(join(exported, "package-lock.json"), "utf8"))
+      await exec("npm", ["ci", "--ignore-scripts", "--no-audit", "--no-fund"], options)
+      await exec("npm", ["run", "build"], options)
+      await exec("npm", ["prune", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund"], options)
+      if (contentHash(await readFile(join(exported, "package-lock.json"), "utf8")) !== lockHash) throw failure("configuration", "The deployment build changed its lockfile.")
+      await rm(join(exported, "dist", "test"), { recursive: true, force: true })
+      root = await stageRelease(exported, settings.dataDir, revision)
+    } finally { await rm(build, { recursive: true, force: true }) }
     const entry = join(root, "dist/src/cli.js")
     const node = process.env.POCKET_NODE_PATH ?? (await exec("/usr/bin/which", ["node"])).stdout.trim()
-    if (!isAbsolute(node) || node.startsWith("/nix/store/")) throw failure("configuration", "POCKET_NODE_PATH must name a stable absolute Node executable, rather than a collectible Nix store path.")
+    if (!isAbsolute(node) || node.startsWith("/nix/store/") || !process.env.POCKET_NODE_PATH && /\/(?:\.nvm\/versions|fnm\/node-versions|asdf\/installs|mise\/installs)\//.test(node)) throw failure("configuration", "POCKET_NODE_PATH must name a stable absolute Node executable, rather than a collectible Nix store path.")
     const version = (await exec(node, ["--version"])).stdout.trim()
     if (Number(version.replace(/^v/, "").split(".")[0]) < 24) throw failure("configuration", "Pocket requires Node 24 or newer.")
     const agents = join(homedir(), "Library/LaunchAgents")
@@ -112,18 +131,19 @@ const program = Effect.gen(function*() {
       while (alive() && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100))
       if (alive()) throw failure("configuration", "The previous Pocket service has not exited. Deployment stopped before starting a second instance.")
     }
-    await writeFile(plist, launchAgentPlist({ node, entry, root, dataDir: settings.dataDir, port: settings.port, revision }), { mode: 0o600 })
+    await writeFile(plist, launchAgentPlist({ node, entry, root, dataDir: settings.dataDir, port: settings.port, revision, sessionLockDir: settings.sessionLockDir }), { mode: 0o600 })
     await exec("launchctl", ["bootstrap", domain, plist])
     let ready = false
-    for (let attempt = 0; attempt < 600; attempt++) {
-      ready = await fetch(`http://127.0.0.1:${settings.port}/health`, { signal: AbortSignal.timeout(1000) }).then(async (r) => r.ok && (await r.json() as { revision?: string }).revision === revision, () => false)
+    const readyDeadline = Date.now() + 60000
+    while (Date.now() < readyDeadline) {
+      ready = await fetch(`http://127.0.0.1:${settings.port}/health`, { signal: AbortSignal.timeout(Math.max(1, Math.min(1000, readyDeadline - Date.now()))) }).then(async (r) => r.ok && (await r.json() as { revision?: string; sessionLockDir?: string }).revision === revision, () => false)
       if (ready) break
       await new Promise((r) => setTimeout(r, 100))
     }
-    if (!ready) throw failure("configuration", "The Pocket release did not become ready. Inspect its private logs and LaunchAgent state.")
+    if (!ready) throw failure("configuration", "The replacement Pocket LaunchAgent is loaded but did not become ready within 60 seconds. Its previous wrapper/deployment record were retained. Inspect the private logs and launchctl state, then rerun the installer to reconcile.")
     const bin = join(homedir(), ".local/bin")
     await mkdir(bin, { recursive: true })
-    await writeFile(join(bin, "pocket-mcp"), `#!/bin/sh\nexport POCKET_DATA_DIR=${quote(settings.dataDir)}\nexec ${quote(node)} ${quote(entry)} "$@"\n`, { mode: 0o755 })
+    await writeFile(join(bin, "pocket-mcp"), `#!/bin/sh\nexport POCKET_DATA_DIR=${quote(settings.dataDir)}\nexport POCKET_SESSION_LOCK_DIR=${quote(settings.sessionLockDir ?? settings.dataDir)}\nexec ${quote(node)} ${quote(entry)} "$@"\n`, { mode: 0o755 })
     await writeFile(join(settings.dataDir, "deployment.json"), JSON.stringify({ revision, root, node, installedAt: new Date().toISOString(), port: settings.port }), { mode: 0o600 })
     return { installed: true, label, revision, port: settings.port, command: join(bin, "pocket-mcp") }
   }, "configuration", "Could not install the Pocket LaunchAgent. Inspect launchctl state and the private service logs.")

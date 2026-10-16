@@ -2,7 +2,7 @@ import { Effect, Layer } from "effect"
 import { Backups } from "../src/backups.js"
 import { failure, type PocketError } from "../src/core.js"
 import { PocketLive } from "../src/pocket.js"
-import { PocketTransport } from "../src/transport.js"
+import { PocketTransport, type PreparedRequest } from "../src/transport.js"
 
 export const fixture = () => {
   const detail = {
@@ -18,8 +18,7 @@ export const fixture = () => {
   }
   const action = { id: "global-1", title: "Original action", recordingId: "recording-1", summarizationId: "summary-1", parentTaskId: "source-1", dueDate: null as string | null, status: "TODO", completedAt: null as string | null, version: 1 }
   const state = { detail, action, requests: [] as { method: string; path: string; body?: unknown }[], backups: [] as unknown[], rejectBackup: false, failAfterWrite: false, beforeRead: undefined as (() => void) | undefined, afterWrite: undefined as (() => void) | undefined, readFailure: false, writeDelay: 0 }
-  const transport = Layer.succeed(PocketTransport, {
-    request: (method, path, body) => Effect.suspend((): Effect.Effect<unknown, PocketError> => {
+  const request: PreparedRequest = (method, path, body) => Effect.suspend((): Effect.Effect<unknown, PocketError> => {
       state.requests.push({ method, path, body })
       if (method === "GET") {
         state.beforeRead?.()
@@ -47,7 +46,7 @@ export const fixture = () => {
       if (state.writeDelay > 0) return Effect.sleep(`${state.writeDelay} millis`).pipe(Effect.as({ success: true }))
       return state.failAfterWrite ? Effect.fail(failure("uncertain_write", "A test transport failed after applying the write.")) : Effect.succeed({ success: true })
     })
-  })
+  const transport = Layer.succeed(PocketTransport, { request, prepare: Effect.succeed(request) })
   const backups = Layer.succeed(Backups, { save: (_kind, _recordingId, content) => Effect.suspend(() => {
     if (state.rejectBackup) return Effect.fail(failure("storage", "Cannot save backup."))
     state.backups.push(structuredClone(content))

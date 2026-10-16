@@ -1,7 +1,7 @@
 import { AsyncEntry } from "@napi-rs/keyring"
 import { Context, Effect, Layer, Redacted, Schema } from "effect"
 import lockfile from "proper-lockfile"
-import { attempt, decode, defaultDataDir, failure, privateDirectory, type PocketError } from "./core.js"
+import { Settings, attempt, decode, defaultDataDir, failure, privateDirectory, type PocketError } from "./core.js"
 
 export const Credential = Schema.Struct({
   apiKey: Schema.NonEmptyString,
@@ -39,7 +39,8 @@ export const withSessionLock = <A, E, R>(effect: Effect.Effect<A, E, R>, directo
     (release) => Effect.promise(() => release()).pipe(Effect.catchCause(() => Effect.void)))
 })
 
-export const SecretStorageLive = Layer.sync(SecretStorage, () => {
+export const SecretStorageLive = Layer.effect(SecretStorage, Effect.gen(function*() {
+  const settings = yield* Settings
   const entry = new AsyncEntry("pocket-personal-mcp", "firebase-session")
   return {
     load: attempt(async () => {
@@ -48,6 +49,6 @@ export const SecretStorageLive = Layer.sync(SecretStorage, () => {
     }, "storage", "Cannot read the Pocket session from the operating system credential store."),
     save: (credential) => attempt(() => entry.setPassword(JSON.stringify(Redacted.value(credential))), "storage", "Cannot save the Pocket session in the operating system credential store."),
     remove: attempt(async () => { await entry.deleteCredential() }, "storage", "Cannot remove the Pocket session from the operating system credential store."),
-    withLock: withSessionLock
+    withLock: <A, E, R>(effect: Effect.Effect<A, E, R>) => withSessionLock(effect, settings.sessionLockDir ?? defaultDataDir)
   }
-})
+}))

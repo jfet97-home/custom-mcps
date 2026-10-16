@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { Effect } from "effect"
 import { NodeRuntime } from "@effect/platform-node"
-import { Backups } from "./backups.js"
+import { Backups, canonicalJson } from "./backups.js"
 import { failure } from "./core.js"
 import { PocketTransport } from "./transport.js"
 import { notesFrom, transcriptFrom } from "./recording.js"
@@ -20,8 +20,8 @@ const program = Effect.gen(function*() {
   const transcript = yield* checked(() => transcriptFrom(initial))
   const segment = transcript.segments.find((entry) => (entry.text ?? "").length > 0 && entry.text === entry.originalText)
   if (!segment) return yield* Effect.fail(failure("validation", "The selected recording has no text segment to verify."))
-  const notesBackup = yield* backups.save("notes", recordingId, notes.markdown, notes.summarizationId)
-  const transcriptBackup = yield* backups.save("transcript", recordingId, transcript)
+  const notesBackup = yield* backups.save("notes", recordingId, { document: notes, rawRecording: initial }, notes.summarizationId)
+  const transcriptBackup = yield* backups.save("transcript", recordingId, { document: transcript, rawRecording: initial })
   process.stdout.write(`${JSON.stringify({ recordingId, summarizationId: notes.summarizationId, notesCharacters: notes.markdown.length, transcriptSegments: transcript.segments.length, notesBackup, transcriptBackup })}\n`)
   const marker = `[Pocket MCP reversible verification ${randomUUID()}]`
   const notesResult = yield* roundTrip({
@@ -30,7 +30,7 @@ const program = Effect.gen(function*() {
     write: (markdown) => api.request("PATCH", `/api/v1/summarize/${notes.summarizationId}/markdown`, { markdown })
   })
   process.stdout.write(`${JSON.stringify({ notes: notesResult })}\n`)
-  const snapshot = (value: ReturnType<typeof transcriptFrom>) => JSON.stringify({ transcriptionId: value.transcriptionId, segments: value.segments })
+  const snapshot = (value: ReturnType<typeof transcriptFrom>) => canonicalJson({ transcriptionId: value.transcriptionId, segments: value.segments })
   const original = snapshot(transcript)
   const modified = snapshot({ ...transcript, segments: transcript.segments.map((s) => s.segmentIndex === segment.segmentIndex ? { ...s, text: `${s.text} ${marker}`, originalText: `${s.text} ${marker}` } : s) })
   const transcriptResult = yield* roundTrip({

@@ -9,6 +9,8 @@ import { runtime } from "./runtime.js"
 import { Pocket } from "./pocket.js"
 import { serverProgram } from "./server.js"
 
+process.once("SIGHUP", () => { process.kill(process.pid, "SIGTERM") })
+
 const args = process.argv.slice(2)
 const serving = args[0] === "serve" || args[0] === "stdio"
 const program: Effect.Effect<unknown, PocketError, Settings | SecretStorage | Session | Pocket> = serving ? serverProgram(args[0] === "stdio")

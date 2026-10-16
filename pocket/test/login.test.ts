@@ -1,10 +1,10 @@
 import assert from "node:assert/strict"
 import { test } from "node:test"
-import { mkdtemp, readdir, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Effect, Fiber } from "effect"
-import { withLoginBrowser, type LoginBrowser } from "../src/login.js"
+import { cleanLoginProfiles, withLoginBrowser, type LoginBrowser } from "../src/login.js"
 import { failure } from "../src/core.js"
 
 test("dedicated browser profiles are fresh and cleaned on success, failure and interruption", async () => {
@@ -29,5 +29,16 @@ test("dedicated browser profiles are fresh and cleaned on success, failure and i
     }
     assert.equal(new Set(profiles).size, 3)
     assert.deepEqual(await readdir(join(dataDir, "login-profiles")), [])
+  } finally { await rm(dataDir, { recursive: true, force: true }) }
+})
+
+test("a crashed login profile is swept only after its recorded process group is gone", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "pocket-stale-login-"))
+  try {
+    const profile = join(dataDir, "login-profiles", "00000000-0000-0000-0000-000000000000")
+    await mkdir(profile, { recursive: true, mode: 0o700 })
+    await writeFile(join(profile, "pocket-login-process.json"), JSON.stringify({ pid: 2147483647 }), { mode: 0o600 })
+    await cleanLoginProfiles(dataDir)
+    await assert.rejects(stat(profile), { code: "ENOENT" })
   } finally { await rm(dataDir, { recursive: true, force: true }) }
 })

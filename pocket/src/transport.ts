@@ -2,16 +2,16 @@ import { Context, Effect, Layer, Redacted, Schedule } from "effect"
 import { API_ORIGIN, attempt, failure, PocketError } from "./core.js"
 import { Session } from "./session.js"
 
+export type PreparedRequest = (method: "GET" | "POST" | "PATCH", path: string, body?: unknown) => Effect.Effect<unknown, PocketError>
 export class PocketTransport extends Context.Service<PocketTransport, {
-  readonly request: (method: "GET" | "POST" | "PATCH", path: string, body?: unknown) => Effect.Effect<unknown, PocketError>
+  readonly prepare: Effect.Effect<PreparedRequest, PocketError>
+  readonly request: PreparedRequest
 }>()("pocket/Transport") {}
 
 export const makePocketTransportLive = (fetcher = globalThis.fetch) => Layer.effect(PocketTransport, Effect.gen(function*() {
   const session = yield* Session
-  return {
-    request: (method, path, body) => Effect.gen(function*() {
+  const prepared = (token: Redacted.Redacted<string>): PreparedRequest => (method, path, body) => Effect.gen(function*() {
       if (!path.startsWith("/api/v1/") || path.includes("..") || path.includes("\\")) return yield* Effect.fail(failure("validation", "Invalid Pocket API operation."))
-      const token = yield* session.token
       const request = attempt(async (signal) => {
         const response = await fetcher(new URL(path, API_ORIGIN), {
           method, redirect: "error", signal: AbortSignal.any([signal, AbortSignal.timeout(30000)]),
@@ -48,7 +48,7 @@ export const makePocketTransportLive = (fetcher = globalThis.fetch) => Layer.eff
       const operation = method === "GET" ? request.pipe(Effect.retry({ times: 1, schedule: Schedule.spaced("500 millis"), while: (error) => error.code === "network" || error.status === 429 || error.status !== undefined && error.status >= 500 })) : request
       return yield* operation.pipe(Effect.tapError((error) => error.code === "authentication" ? session.invalidate : Effect.void))
     })
-  }
+  return { prepare: session.token.pipe(Effect.map(prepared)), request: (method, path, body) => session.token.pipe(Effect.flatMap((token) => prepared(token)(method, path, body))) }
 }))
 
 export const PocketTransportLive = makePocketTransportLive()

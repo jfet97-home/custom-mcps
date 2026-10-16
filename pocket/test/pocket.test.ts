@@ -179,3 +179,28 @@ test("action completion and due-date comparisons follow explicit state and calen
     assert.equal(state.action.dueDate, null)
   }).pipe(Effect.provide(layer)))
 })
+
+test("missing originalText and reordered object keys do not produce false transcript mismatches", async () => {
+  const { state, layer } = fixture()
+  delete (state.detail.transcription.transcription.segments[1] as { originalText?: string }).originalText
+  await Effect.runPromise(Effect.gen(function*() {
+    const p = yield* Pocket
+    const full = yield* p.getRecording("recording-1")
+    const notesHash = full.contentHashes.notes.find((n) => n.summarizationId === "summary-1")!.hash
+    yield* p.updateNotes({ recordingId: "recording-1", summarizationId: "summary-1", expectedHash: notesHash, markdown: "From recording hash" })
+    const result = yield* p.editTranscript({ recordingId: "recording-1", expectedHash: full.contentHashes.transcript!, corrections: [{ segmentIndex: 1, text: "Correction" }] })
+    assert.equal(result.verified, true)
+  }).pipe(Effect.provide(layer)))
+})
+
+test("action-item post-send errors carry the private backup ID", async () => {
+  const { state, layer } = fixture()
+  state.failAfterWrite = true
+  await Effect.runPromise(Effect.gen(function*() {
+    const p = yield* Pocket
+    const page = yield* p.searchActionItems({ recordingId: "recording-1" })
+    const result = yield* p.updateActionItem({ recordingId: "recording-1", actionItemId: "global-1", expectedHash: page.items[0]!.hash, title: "Saved" }).pipe(Effect.result)
+    assert.equal(result._tag, "Failure")
+    if (result._tag === "Failure") { assert.equal(result.failure.code, "uncertain_write"); assert.equal(result.failure.backupId, "backup-1") }
+  }).pipe(Effect.provide(layer)))
+})

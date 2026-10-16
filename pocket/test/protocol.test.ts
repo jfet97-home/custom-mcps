@@ -62,7 +62,7 @@ test("native HTTP protocol works and rejects browser Origins and foreign Host he
     })
     assert.equal(foreignHost, 403)
     assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { origin: "https://evil.example", "content-type": "application/json" }, body: "{}" })).status, 403)
-    assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401)
+    for (const method of ["GET", "DELETE", "POST"]) assert.equal((await fetch(`${url}/mcp`, { method, ...(method === "POST" ? { headers: { "content-type": "application/json" }, body: "{}" } : {}) })).status, 401)
     assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { authorization: "Bearer wrong", "content-type": "application/json" }, body: "{}" })).status, 401)
     const alias = await new Promise<number>((resolve, reject) => {
       const req = request(`${url}/mcp`, { method: "POST", headers: { host: "host.docker.internal", authorization: "Bearer test-http-secret", "content-type": "application/json" } }, (response) => { response.resume(); resolve(response.statusCode ?? 0) })
@@ -92,5 +92,19 @@ test("stdio EOF drains the native protocol and exits without a termination signa
   try {
     const code = await Promise.race([exit, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("stdio did not exit after EOF")), 5000) })])
     assert.equal(code, 0)
+  } finally { clearTimeout(timeout); if (child.exitCode === null) child.kill("SIGKILL") }
+})
+
+
+test("a broken stdout pipe terminates stdio with an error instead of waiting forever", async () => {
+  const child = spawn(process.execPath, [harness], { stdio: ["pipe", "pipe", "ignore"] })
+  const exit = new Promise<number | null>((resolve, reject) => { child.once("exit", resolve); child.once("error", reject) })
+  child.stdout.destroy()
+  child.stdin.on("error", () => undefined)
+  child.stdin.write(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "broken-pipe-test", version: "1" } } }) + "\n")
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    const code = await Promise.race([exit, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("stdio did not exit after output failure")), 5000) })])
+    assert.notEqual(code, 0)
   } finally { clearTimeout(timeout); if (child.exitCode === null) child.kill("SIGKILL") }
 })
