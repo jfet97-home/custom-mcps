@@ -10,6 +10,10 @@ Its upstream tool names normally start with `pocket__`; use the actual names and
 schemas returned by this client's discovery tools. Do not switch to the official
 Pocket MCP, whose Free-account tool surface differs.
 
+For synthesis that combines a full transcript, current edited Notes and a
+writing structure such as Deep Summary plus Action Summary, use
+[refine-pocket-notes](../refine-pocket-notes/SKILL.md).
+
 ## Discover and read
 
 Start with advertised server discovery, search a small Pocket shortlist with

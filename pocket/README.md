@@ -219,16 +219,26 @@ Action-item mutations and nonempty folder/organization-space responses are
 covered by fixtures or client-contract research, not by live mutations on this
 account. Backend edit timestamps can change even when original text is restored.
 
-## Usage skill
+## Usage skills
 
 The committed [use-pocket-mcp skill](skills/use-pocket-mcp/SKILL.md) describes
 normal gateway discovery, complete reads, expected hashes, raw segment indices
-and uncertain-write recovery. Install and sync it on the Mac with Skillshare:
+and uncertain-write recovery.
+
+The [refine-pocket-notes skill](skills/refine-pocket-notes/SKILL.md) combines the
+complete transcript, current edited Notes and selected writing structures into
+one revised document. It includes Deep Summary and Action Summary outlines,
+preserves existing additions and uncertainty, and checks both sources before
+saving with a private backup and a final reread. These outlines follow the
+template descriptions; they do not reproduce Pocket's hidden backend prompts.
+
+Install and sync both skills globally on the Mac with Skillshare:
 
 ```sh
-skillshare install ./skills/use-pocket-mcp
-skillshare sync
+skillshare install ./skills/use-pocket-mcp --global
+skillshare install ./skills/refine-pocket-notes --global
+skillshare sync --global
 ```
 
-The skill contains no credentials or private account/recording content. Update
-its installed copy with Skillshare after changing the committed skill source.
+The skills contain no credentials or private account/recording content. Update
+their installed copies with Skillshare after changing the committed sources.
