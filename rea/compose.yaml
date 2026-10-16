@@ -3,7 +3,7 @@ name: rea-mcp
 services:
   rea-mcp:
     build: .
-    image: rea-mcp-local:6.5.0
+    image: rea-mcp-local:6.5.0-ghidra12.1.4
     init: true
     restart: unless-stopped
     stdin_open: true
