@@ -25,6 +25,8 @@ test("native Effect MCP stdio discovers tools, reads complete Notes, writes with
     const notes = before.structuredContent as { markdown: string; hash: string; summarizationId: string }
     assert.equal(notes.markdown, "# Original\n\nComplete Notes.")
     assert.equal(notes.summarizationId, "summary-1")
+    const missingHash = await client.callTool({ name: "update_notes", arguments: { recordingId: "recording-1", summarizationId: notes.summarizationId, markdown: "unsafe" } })
+    assert.equal(missingHash.isError, true)
     const update = await client.callTool({ name: "update_notes", arguments: { recordingId: "recording-1", summarizationId: notes.summarizationId, markdown: "Saved by protocol", expectedHash: notes.hash } })
     assert.notEqual(update.isError, true)
     const stale = await client.callTool({ name: "update_notes", arguments: { recordingId: "recording-1", summarizationId: notes.summarizationId, markdown: "stale", expectedHash: notes.hash } })
@@ -60,7 +62,15 @@ test("native HTTP protocol works and rejects browser Origins and foreign Host he
     })
     assert.equal(foreignHost, 403)
     assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { origin: "https://evil.example", "content-type": "application/json" }, body: "{}" })).status, 403)
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`)))
+    assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).status, 401)
+    assert.equal((await fetch(`${url}/mcp`, { method: "POST", headers: { authorization: "Bearer wrong", "content-type": "application/json" }, body: "{}" })).status, 401)
+    const alias = await new Promise<number>((resolve, reject) => {
+      const req = request(`${url}/mcp`, { method: "POST", headers: { host: "host.docker.internal", authorization: "Bearer test-http-secret", "content-type": "application/json" } }, (response) => { response.resume(); resolve(response.statusCode ?? 0) })
+      req.on("error", reject); req.end("{}")
+    })
+    assert.notEqual(alias, 401)
+    assert.notEqual(alias, 403)
+    await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`), { requestInit: { headers: { authorization: "Bearer test-http-secret" } } }))
     assert.equal((await client.listTools()).tools.length, 12)
     const account = await client.callTool({ name: "get_account_info", arguments: {} })
     assert.equal((account.structuredContent as { subscriptionType: string }).subscriptionType, "FREE")
@@ -71,4 +81,16 @@ test("native HTTP protocol works and rejects browser Origins and foreign Host he
     child.kill("SIGTERM")
     await exit
   }
+})
+
+
+test("stdio EOF drains the native protocol and exits without a termination signal", async () => {
+  const child = spawn(process.execPath, [harness], { stdio: ["pipe", "ignore", "ignore"] })
+  const exit = new Promise<number | null>((resolve, reject) => { child.once("exit", resolve); child.once("error", reject) })
+  child.stdin.end()
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    const code = await Promise.race([exit, new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("stdio did not exit after EOF")), 5000) })])
+    assert.equal(code, 0)
+  } finally { clearTimeout(timeout); if (child.exitCode === null) child.kill("SIGKILL") }
 })

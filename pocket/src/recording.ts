@@ -5,7 +5,7 @@ import { decode, failure } from "./core.js"
 export const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_-]{1,256}$/))
 const maybeString = Schema.optionalKey(Schema.NullOr(Schema.String))
 export const Recording = Schema.Struct({
-  id: Id, title: Schema.String, description: maybeString,
+  id: Id, title: maybeString, description: maybeString,
   duration: Schema.optionalKey(Schema.NullOr(Schema.Number)),
   recordingAt: maybeString, createdAt: maybeString, updatedAt: maybeString,
   folderId: maybeString, workspaceId: maybeString, recordingType: maybeString,
@@ -28,21 +28,23 @@ const Summarization = Schema.Struct({
   v2: Schema.optionalKey(Schema.NullOr(Schema.Struct({ summary: Schema.optionalKey(Schema.NullOr(Summary)) }))),
   summary: Schema.optionalKey(Schema.NullOr(Summary))
 })
-export const RecordingDetail = Schema.Struct({
-  recording: Recording,
-  transcription: Schema.optionalKey(Schema.NullOr(Schema.Struct({
+const TranscriptionText = Schema.Union([Schema.String, Schema.Struct({ text: Schema.optionalKey(Schema.String), segments: Schema.Array(Segment) })])
+const Transcription = Schema.optionalKey(Schema.NullOr(Schema.Struct({
     id: Id, transcriptionId: Id, processingStatus: maybeString, updatedAt: maybeString,
-    transcription: Schema.optionalKey(Schema.NullOr(Schema.Struct({
-      text: Schema.optionalKey(Schema.String), segments: Schema.Array(Segment)
-    })))
-  }))),
-  summarizations: Schema.Record(Schema.String, Summarization)
+    transcription: Schema.optionalKey(Schema.NullOr(TranscriptionText)),
+    originalTranscription: Schema.optionalKey(Schema.NullOr(TranscriptionText))
+})))
+const Summarizations = Schema.optionalKey(Schema.NullOr(Schema.Record(Schema.String, Summarization)))
+export const RecordingDetail = Schema.Struct({
+  recording: Recording, transcription: Transcription, summarizations: Summarizations
 })
+const NotesDetail = Schema.Struct({ recording: Recording, summarizations: Summarizations })
+const TranscriptDetail = Schema.Struct({ recording: Recording, transcription: Transcription })
 export type RecordingDetail = typeof RecordingDetail.Type
 
 export const notesFrom = (raw: unknown, selectedId?: string) => {
-  const detail = decode(RecordingDetail, raw)
-  const versions = Object.values(detail.summarizations).sort((a, b) => (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? ""))
+  const detail = decode(NotesDetail, raw)
+  const versions = Object.values(detail.summarizations ?? {}).sort((a, b) => (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? ""))
   const selected = selectedId === undefined ? versions[0] : versions.find((entry) => entry.summarizationId === selectedId)
   if (!selected) throw failure("validation", "The selected summarization does not exist on this recording.")
   const summary = selected.v2?.summary ?? selected.summary
@@ -63,16 +65,18 @@ export const notesFrom = (raw: unknown, selectedId?: string) => {
 }
 
 export const transcriptFrom = (raw: unknown) => {
-  const detail = decode(RecordingDetail, raw)
+  const detail = decode(TranscriptDetail, raw)
   const transcription = detail.transcription
   if (!transcription?.transcription) throw failure("validation", "This recording has no completed segmented transcript.")
-  const segments = transcription.transcription.segments
+  const segments = typeof transcription.transcription === "string" ? [] : transcription.transcription.segments
   return {
     recordingId: detail.recording.id,
     transcriptionId: transcription.transcriptionId,
     rowId: transcription.id,
-    text: segments.map((segment) => segment.text ?? segment.originalText ?? "").join("\n"),
+    text: typeof transcription.transcription === "string" ? transcription.transcription : segments.map((segment) => segment.text ?? segment.originalText ?? "").join("\n"),
     segments: segments.map((segment, segmentIndex) => ({ ...segment, segmentIndex })),
-    hash: contentHash(segments), updatedAt: transcription.updatedAt ?? null
+    hash: contentHash({ transcriptionId: transcription.transcriptionId, segments, ...(typeof transcription.transcription === "string" ? { text: transcription.transcription } : {}) }),
+    supportsSegmentEdits: typeof transcription.transcription !== "string",
+    updatedAt: transcription.updatedAt ?? null
   }
 }

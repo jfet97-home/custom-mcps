@@ -1,19 +1,19 @@
 import { createServer } from "node:http"
-import { Effect, Layer, Logger, Schema } from "effect"
+import { ByteSize, Deferred, Effect, Exit, Layer, Logger, Schema, Sink, Stdio } from "effect"
 import { McpProtocol, McpServer, Tool, Toolkit } from "effect/ai"
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { NodeHttpServer, NodeStdio } from "@effect/platform-node"
 import { failure, PocketError, Settings } from "./core.js"
 import { Pocket } from "./pocket.js"
-import { Account, ActionPage, Folders, Hash, Notes, RecordingPage, SearchPage, Spaces, Transcript, WriteResult } from "./contracts.js"
-import { Id, RecordingDetail } from "./recording.js"
+import { Account, ActionPage, Folders, Hash, Notes, RecordingPage, RecordingWithHashes, SearchPage, Spaces, Transcript, WriteResult } from "./contracts.js"
+import { Id } from "./recording.js"
+import { authorized, HttpAuthorization, HttpAuthorizationLive } from "./http-auth.js"
 
 const positive = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100000 }))
 const limit = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 }))
 const offset = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 1000000 }))
 const markdown = Schema.String.check(Schema.isMaxLength(2000000))
 const text = Schema.String.check(Schema.isMaxLength(100000))
-const optionalHash = Schema.optionalKey(Hash)
 const common = { failure: PocketError, dependencies: [Pocket] }
 
 export const toolkit = Toolkit.make(
@@ -27,10 +27,10 @@ export const toolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
   Tool.make("get_recording", {
     ...common, description: "Read recording metadata, complete segmented transcript and all available original Markdown Notes versions. Row IDs, recording IDs, transcription IDs and summarization IDs are distinct.",
-    parameters: Schema.Struct({ recordingId: Id }), success: RecordingDetail
+    parameters: Schema.Struct({ recordingId: Id }), success: RecordingWithHashes
   }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
   Tool.make("get_transcript", {
-    ...common, description: "Read the complete original Pocket transcript with raw segmentIndex values (including empty segments), transcriptionId and content hash for optimistic concurrency.",
+    ...common, description: "Read the complete current Pocket transcript with raw segmentIndex values (including empty segments), transcriptionId and a hash binding content to that transcription. Pocket text edits overwrite both text and originalText; differing fields are preserved in private raw backups.",
     parameters: Schema.Struct({ recordingId: Id }), success: Transcript
   }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
   Tool.make("get_notes", {
@@ -38,12 +38,12 @@ export const toolkit = Toolkit.make(
     parameters: Schema.Struct({ recordingId: Id, summarizationId: Schema.optionalKey(Id) }), success: Notes
   }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
   Tool.make("update_notes", {
-    ...common, description: "Save exactly the supplied full Markdown to existing Pocket AI Notes without regenerating content. Pass expectedHash and/or expectedVersion from get_notes to reject stale edits. Saves a private backup first and verifies by rereading. Comparison is client-side, not atomic on Pocket. Never automatically retry an uncertain_write; reread first.",
-    parameters: Schema.Struct({ recordingId: Id, summarizationId: Id, markdown, expectedHash: optionalHash, expectedVersion: Schema.optionalKey(Schema.Union([Schema.String, Schema.Number])) }), success: WriteResult
+    ...common, description: "Save exactly the supplied full Markdown without regenerating Notes. Requires expectedHash from get_notes. A private raw backup is saved first. Comparison is client-side, not atomic. Every failure after sending the write is uncertain_write and includes backupId; reread before another write. Notes version fields describe source formats and are not edit revisions.",
+    parameters: Schema.Struct({ recordingId: Id, summarizationId: Id, markdown, expectedHash: Hash }), success: WriteResult
   }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, true).annotate(Tool.Idempotent, false),
   Tool.make("edit_transcript", {
-    ...common, description: "Correct one or more transcript segments in a single batch using raw segmentIndex values from get_transcript. Rejects duplicate/out-of-range indices. Pass expectedHash for stale-edit detection; saves a private backup and verifies the resulting text. Client-side comparison is not atomic. Never automatically retry an uncertain_write.",
-    parameters: Schema.Struct({ recordingId: Id, expectedHash: optionalHash,
+    ...common, description: "Correct one or more raw segment indices in a single batch. Requires expectedHash from get_transcript; rejects duplicate/out-of-range indices. Pocket overwrites BOTH text and originalText. When those fields differ, explicitly set allowOriginalTextOverwrite to permit that loss of distinction; the full raw response is backed up first. Post-send failures are uncertain_write with backupId. Client-side comparison is not atomic.",
+    parameters: Schema.Struct({ recordingId: Id, expectedHash: Hash, allowOriginalTextOverwrite: Schema.optionalKey(Schema.Boolean),
       corrections: Schema.Array(Schema.Struct({ segmentIndex: offset, text })).check(Schema.isBetweenLength(1, 100)) }), success: WriteResult
   }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, true).annotate(Tool.Idempotent, false),
   Tool.make("search_action_items", {
@@ -51,8 +51,8 @@ export const toolkit = Toolkit.make(
     parameters: Schema.Struct({ query: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isMaxLength(1000))), recordingId: Schema.optionalKey(Id), limit: Schema.optionalKey(limit), offset: Schema.optionalKey(offset) }), success: ActionPage
   }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
   Tool.make("update_action_item", {
-    ...common, description: "Update a global action item's title/dueDate, OR its completed state, using an ID from search_action_items and its recordingId. Completion must be changed separately from title/dueDate so each call makes one upstream write. dueDate accepts an ISO date/time or null. Optional expectedHash, private backup and reread verification protect against stale edits; comparison is client-side.",
-    parameters: Schema.Struct({ recordingId: Id, actionItemId: Id, expectedHash: optionalHash,
+    ...common, description: "Update a global action item's title/dueDate, OR completed state, using its global ID, recordingId and required expectedHash from search_action_items. Completion changes use a separate call so each operation sends one write. dueDate accepts an ISO date/time or null. Saves a raw private backup; post-send failures are uncertain_write with backupId. Comparison is client-side.",
+    parameters: Schema.Struct({ recordingId: Id, actionItemId: Id, expectedHash: Hash,
       title: Schema.optionalKey(Schema.NonEmptyString.check(Schema.isMaxLength(10000))), dueDate: Schema.optionalKey(Schema.NullOr(Schema.String.check(Schema.isPattern(/^\d{4}-\d{2}-\d{2}(?:T.*)?$/)))), completed: Schema.optionalKey(Schema.Boolean) }), success: WriteResult
   }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, true).annotate(Tool.Idempotent, false),
   Tool.make("list_folders", {
@@ -99,21 +99,29 @@ export const hostAllowed = (host: string | undefined): boolean => {
 const localOnly = HttpRouter.middleware((http) => Effect.gen(function*() {
   const request = yield* HttpServerRequest.HttpServerRequest
   if (!hostAllowed(request.headers.host) || request.headers.origin !== undefined) return HttpServerResponse.empty({ status: 403 })
+  if (request.url.split("?", 1)[0] !== "/health" && !authorized(request.headers.authorization, (yield* HttpAuthorization).token)) return HttpServerResponse.empty({ status: 401 })
   return yield* http
 }), { global: true })
 
-export const serverProgram = (stdio: boolean) => Effect.gen(function*() {
+export const serverProgram = (stdio: boolean, authLayer = HttpAuthorizationLive) => Effect.gen(function*() {
   const settings = yield* Settings
   const registered = McpServer.toolkit(toolkit).pipe(Layer.provide(handlers))
-  const server = stdio
-    ? Layer.merge(registered, McpServer.layerStdio(options)).pipe(Layer.provide(NodeStdio.layer))
-    : HttpRouter.serve(Layer.mergeAll(
+  if (stdio) return yield* Effect.scoped(Effect.gen(function*() {
+    const drained = yield* Deferred.make<void>()
+    const original = yield* Stdio.Stdio
+    const observed = Stdio.make({ ...original, stdout: (options) => original.stdout(options).pipe(Sink.onExit((exit) => Exit.isSuccess(exit) ? Deferred.succeed(drained, undefined) : Effect.void)) })
+    yield* Layer.build(Layer.merge(registered, McpServer.layerStdio(options)).pipe(Layer.provide(Layer.succeed(Stdio.Stdio, observed))))
+    yield* Effect.sync(() => { process.stderr.write("Pocket MCP ready (stdio).\n") })
+    yield* Deferred.await(drained)
+  })).pipe(Effect.provide(NodeStdio.layer))
+  const server = HttpRouter.serve(Layer.mergeAll(
       registered, McpServer.layerHttp({ ...options, path: "/mcp", allowedOrigins: [] }), localOnly,
-      HttpRouter.add("GET", "/health", Effect.succeed(HttpServerResponse.jsonUnsafe({ service: "pocket-personal", version: "0.1.0", ok: true })))
-    ), { disableLogger: true, disableListenLog: true }).pipe(Layer.provide(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: settings.port })))
+      HttpRouter.add("GET", "/health", Effect.succeed(HttpServerResponse.jsonUnsafe({ service: "pocket-personal", version: "0.1.0", revision: settings.sourceRevision ?? "development", ok: true })))
+    ), { disableLogger: true, disableListenLog: true, middleware: (http) => http.pipe(Effect.provideService(HttpServerRequest.MaxBodySize, ByteSize.mebibytes(12))) })
+    .pipe(Layer.provide(authLayer), Layer.provide(NodeHttpServer.layer(createServer, { host: "127.0.0.1", port: settings.port })))
   yield* Effect.scoped(Effect.gen(function*() {
     yield* Layer.build(server)
-    yield* Effect.sync(() => { process.stderr.write(`Pocket MCP ready (${stdio ? "stdio" : `127.0.0.1:${settings.port}`}).\n`) })
+    yield* Effect.sync(() => { process.stderr.write(`Pocket MCP ready (127.0.0.1:${settings.port}).\n`) })
     yield* Effect.never
   }))
 }).pipe(Effect.mapError(() => failure("configuration", "Could not start the Pocket MCP transport. Check the configured port and runtime.")), Effect.provideService(Logger.LogToStderr, true))

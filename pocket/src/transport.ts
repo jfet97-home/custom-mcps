@@ -19,6 +19,7 @@ export const makePocketTransportLive = (fetcher = globalThis.fetch) => Layer.eff
           ...(body === undefined ? {} : { body: JSON.stringify(body) })
         })
         if (!response.ok) {
+          await response.body?.cancel().catch(() => undefined)
           if (response.status === 401) throw failure("authentication", "Pocket rejected the session. Run pocket-mcp auth status or login again.", 401)
           if (response.status === 403) throw failure("permission", "This Pocket account cannot perform the requested operation.", 403)
           if (response.status === 409 || response.status === 412) throw failure("conflict", "Pocket reported a concurrent edit. Read the content again.", response.status)

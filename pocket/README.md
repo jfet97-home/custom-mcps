@@ -16,7 +16,7 @@ node dist/src/cli.js login
 node dist/src/cli.js auth status
 ```
 
-`login` opens the real Pocket website in a **dedicated Chrome profile**, waits
+`login` opens the real Pocket website in a **fresh dedicated Chrome profile**, waits
 for the normal Google, Apple or email login, and reads Firebase persistence
 only in that profile and the Pocket origin. It checks IndexedDB first and
 localStorage second. The active Firebase Web configuration is discovered from
@@ -27,13 +27,19 @@ Pocket API key. No account creation or provider linking is performed.
 After verifying renewal and access to the Pocket account, the command saves
 the refresh credential in the operating system secret store. On macOS this is
 Keychain, service `pocket-personal-mcp`, account `firebase-session`. The browser
-closes and its dedicated profile is deleted after successful export. Personal
+closes and its dedicated profile is deleted on success, failure and cancellation,
+after waiting for its process group to exit. Personal
 browser profiles are never read. Set `POCKET_CHROME_PATH` when Chrome is installed
-elsewhere. A failed login can leave its private profile for a later retry.
+elsewhere. If the browser cannot be stopped, cleanup reports a failure and retains
+the private profile for inspection rather than removing files under a running process.
+The loopback debugging port is temporary and accessible to other local processes
+during login; it is closed with the dedicated browser.
 
 The server renews ID tokens two minutes before expiry, shares one renewal across
 concurrent calls, and persists refresh-token rotation. A private cross-process
-lock coordinates renewal, login and logout. `auth status` performs a real renewal
+lock at the default private data directory coordinates renewal, login and logout,
+even when instances use different `POCKET_DATA_DIR` settings. Cached calls check
+Keychain without acquiring that lock. `auth status` performs a real renewal
 in a fresh process; it reports identity and expiry without credentials.
 
 ```sh
@@ -42,7 +48,9 @@ node dist/src/cli.js logout
 
 Logout deletes the component's saved credential. The running server checks the
 store before using its token cache and therefore observes logout on its next
-operation. It does not revoke other Pocket application sessions. A revoked or
+operation. `auth status` reports `authenticated=false` for a missing or revoked
+session; network/storage failures remain errors. Logout does not revoke other
+Pocket application sessions. A revoked or
 expired Firebase session produces an `authentication` error requesting login.
 There are no token/password inputs or interactive approvals in MCP tools.
 
@@ -56,8 +64,14 @@ node dist/src/cli.js serve
 HTTP is Streamable HTTP at `http://127.0.0.1:9011/mcp`; health is `/health`.
 The service binds only to loopback, rejects browser Origins and foreign Host
 headers, and accepts `host.docker.internal` so the existing Docker MCPX gateway
-can reach it. Logs go to stderr and never contain tokens, headers or recording
-content. Treat access to this computer and its Docker engine as trusted.
+can reach it. MCP requests also require a random per-install bearer secret from
+`<POCKET_DATA_DIR>/http-token` (owned regular file, mode `0600`). The public health
+route contains no account information. `install-service` creates the secret; for a
+manual HTTP setup call `ensureHttpToken` from the built `http-auth` module first.
+Stdio uses its parent process boundary and does not need this HTTP secret.
+Request bodies are limited to 12 MiB. Logs go to stderr and contain only safe
+status/error messages and write backup IDs/outcomes, never tokens, headers or
+recording content.
 
 The actual Mac deployment is a **native LaunchAgent**, allowing direct Keychain
 access without passing the refresh credential into a container. After committing
@@ -69,12 +83,20 @@ npm run install-service
 
 This installs `com.jfet97.pocket-mcp`, starts it at login, and installs a
 `~/.local/bin/pocket-mcp` wrapper. The installer records the source revision
-privately and refuses uncommitted component changes. Add `~/.local/bin` to PATH
-if needed. Re-run the installer after a committed update and rebuild.
+privately and refuses uncommitted component changes. It rebuilds and copies the
+application and dependencies to a read-only versioned release under
+`<POCKET_DATA_DIR>/releases/<commit>`, verifies its manifest, then waits for the old
+process to exit and the replacement to become ready. The running service never
+loads code from the checkout. Node is resolved through a stable absolute path;
+set `POCKET_NODE_PATH` if needed. Version-specific Nix store paths are rejected.
+Add `~/.local/bin` to PATH if needed. Re-run the installer after a committed update.
 
 Point the MCPX upstream named `pocket` to
 `http://host.docker.internal:9011/mcp` using `streamable-http`. This replaces the
-official upstream while keeping the gateway's other integrations intact.
+official upstream while keeping the gateway's other integrations intact. Configure
+its private `Authorization` header as `Bearer <contents of http-token>` through
+local tooling that reads the file directly; never paste the value into chat or
+commit it. The Firebase refresh credential remains exclusively in Keychain.
 
 `POCKET_DATA_DIR` defaults to
 `~/Library/Application Support/pocket-mcp`; `POCKET_PORT` defaults to `9011`.
@@ -94,8 +116,8 @@ there is no container-to-Keychain dependency or automatic credential export.
 | --- | --- |
 | `list_recordings` | Page recordings with optional folder filter. |
 | `search_recordings` | Pocket hybrid semantic search, up to 100 results. |
-| `get_recording` | Metadata, full segmented transcript and all Notes versions. |
-| `get_transcript` | Complete text, raw segment indices, transcription ID and hash. |
+| `get_recording` | Metadata, transcript, Notes versions and content hashes. |
+| `get_transcript` | Current complete text, raw segment indices, transcription ID and hash. |
 | `get_notes` | Complete original Markdown, summarization ID, versions and hash. |
 | `update_notes` | Save exactly the supplied Markdown without regeneration. |
 | `edit_transcript` | Validate raw indices and apply multiple text corrections in one batch. |
@@ -110,22 +132,39 @@ the available versions. Pass `summarizationId` to choose explicitly. Recording,
 row, summarization and transcription IDs are distinct. Global action-item IDs
 also differ from summary-source item IDs; use IDs from `search_action_items`.
 
-Before a write, pass `expectedHash` from its read tool, and optionally
-`expectedVersion` for Notes. Each operation saves a private backup, rereads the
+Every write requires `expectedHash` from a fresh read tool. Transcript hashes bind
+content to the transcription ID. Notes version fields describe source formats,
+not edit revisions, and are diagnostic only. Each operation saves a private raw
+backup, rereads the
 current content, applies one upstream mutation, and verifies by reading again.
-Writes are serialized in the service. Pocket exposes no atomic compare-and-swap
+Writes are serialized within each server process. Avoid running multiple writers
+against the same content. Pocket exposes no atomic compare-and-swap
 for these routes: another editor can still race between the final read and write.
 
 Errors distinguish authentication, permission, conflicts, validation, network,
 storage, upstream and uncertain write outcomes. Safe GETs retry once; mutations
 never retry automatically. After `uncertain_write`, read current content and
 reconcile it with the intended change before making another write. A timeout can
-mean the server already applied the operation.
+mean the server already applied the operation. Every post-send failure is
+`uncertain_write`; failures after backup creation include `backupId`. Sending and
+verification drain on cancellation or a normal service stop, subject to bounded
+network timeouts and the service manager's shutdown limit. A forced kill or power
+loss can still interrupt them; retain the private backup.
 
 Backups are `<POCKET_DATA_DIR>/backups/<backupId>.json`, containing resource IDs,
-timestamp, hash and original content. Notes backups contain the full Markdown;
-transcript backups contain all segments, including `originalText`. Recovery uses
-the original content through the normal write tool with a freshly read hash.
+timestamp, hash and original content. Mutation backups contain both the decoded
+document and full raw recording/action response, preserving unrecognized fields.
+Notes recovery uses `content.document.markdown` through the normal write tool
+with a freshly read hash.
+
+Pocket transcript edits overwrite **both** `text` and `originalText`. When these
+fields differ, `edit_transcript` refuses the edit unless
+`allowOriginalTextOverwrite=true`. Backups preserve their distinction and the raw
+`originalTranscription`, but the verified text-edit endpoint cannot restore two
+different values separately. Full automatic restoration of that distinction is
+therefore unavailable. Legacy unsegmented transcripts remain readable but are
+not editable by segment. Verification compares every segment, including unedited
+ones, and the transcription identity.
 Keep backups until they are no longer useful; there is no automatic deletion.
 
 Pocket's public REST API is documented primarily for personal API keys. This
@@ -145,7 +184,9 @@ npm test
 
 Tests include real stdio and HTTP protocol handshakes/tool calls, typed failures,
 hash conflicts, ID selection, raw transcript indices, private backups, concurrent
-renewal and cross-process locks, no mutation retries, and interrupted restoration.
+renewal, actual subprocess lock coordination, bearer authentication, login-process
+cleanup, immutable releases, stdio EOF, post-send uncertainty and interrupted
+write verification/restoration.
 
 For an explicitly authorized reversible live check on a sample recording:
 
@@ -160,3 +201,11 @@ reads. Concurrent content is never blindly overwritten. Pocket updates both
 `text` and `originalText` for text edits; the test verifies both plus segment
 structure and transcription identity. If recovery cannot be verified, it reports
 the unresolved state and keeps the private backup.
+
+The live account checks cover complete Notes (including a 10,627-character
+original document), recording/search/account reads, action-item list/search,
+folders and the no-active-organization spaces response. Notes and multi-segment
+transcript saves/restoration were verified through MCPX on the sample recording.
+Action-item mutations and nonempty folder/organization-space responses are
+covered by fixtures or client-contract research, not by live mutations on this
+account. Backend edit timestamps can change even when original text is restored.

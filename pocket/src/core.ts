@@ -1,6 +1,6 @@
 import { homedir } from "node:os"
 import { dirname, resolve } from "node:path"
-import { mkdir, chmod, lstat, realpath } from "node:fs/promises"
+import { mkdir, lstat, realpath } from "node:fs/promises"
 import { Config, Context, Effect, Layer, Schema } from "effect"
 
 export class PocketError extends Schema.TaggedClass<PocketError>()("PocketError", {
@@ -24,12 +24,16 @@ export const decode = <A>(schema: Schema.Codec<A, unknown>, value: unknown): A =
 export class Settings extends Context.Service<Settings, {
   readonly dataDir: string
   readonly port: number
+  readonly sourceRevision?: string
 }>()("pocket/Settings") {}
+
+export const defaultDataDir = resolve(homedir(), "Library/Application Support/pocket-mcp")
 
 export const SettingsLive = Layer.effect(Settings, Effect.gen(function*() {
   const values = yield* Config.all({
-    dataDir: Config.withDefault(Config.String("POCKET_DATA_DIR"), resolve(homedir(), "Library/Application Support/pocket-mcp")),
-    port: Config.withDefault(Config.Int("POCKET_PORT"), 9011)
+    dataDir: Config.withDefault(Config.String("POCKET_DATA_DIR"), defaultDataDir),
+    port: Config.withDefault(Config.Int("POCKET_PORT"), 9011),
+    sourceRevision: Config.withDefault(Config.String("POCKET_SOURCE_REVISION"), "development")
   }).pipe(Effect.mapError(() => failure("configuration", "Invalid Pocket configuration.")))
   if (values.port < 1 || values.port > 65535) return yield* Effect.fail(failure("configuration", "POCKET_PORT must be a valid TCP port."))
   return { ...values, dataDir: resolve(values.dataDir) }
@@ -38,7 +42,9 @@ export const SettingsLive = Layer.effect(Settings, Effect.gen(function*() {
 export const privateDirectory = async (path: string): Promise<void> => {
   if (resolve(path) === homedir() || dirname(resolve(path)) === resolve(path)) throw failure("configuration", "Pocket private state needs its own directory outside Git.")
   await mkdir(path, { recursive: true, mode: 0o700 })
-  if ((await lstat(path)).isSymbolicLink()) throw failure("storage", "Pocket private directories must not be symbolic links.")
+  const metadata = await lstat(path)
+  if (!metadata.isDirectory() || metadata.isSymbolicLink()) throw failure("storage", "Pocket private directories must be real directories.")
+  if ((metadata.mode & 0o077) !== 0) throw failure("storage", "Pocket private directories must already have mode 0700 or stricter; choose a dedicated private directory.")
   let ancestor = await realpath(path)
   while (true) {
     const insideGit = await lstat(resolve(ancestor, ".git")).then(() => true, (error: NodeJS.ErrnoException) => {
@@ -49,7 +55,6 @@ export const privateDirectory = async (path: string): Promise<void> => {
     if (dirname(ancestor) === ancestor) break
     ancestor = dirname(ancestor)
   }
-  await chmod(path, 0o700)
 }
 
 export const APP_ORIGIN = "https://app.heypocket.com"

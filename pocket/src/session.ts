@@ -48,28 +48,30 @@ export const makeSessionLive = (fetcher = globalThis.fetch) => Layer.effect(Sess
   const secrets = yield* SecretStorage
   const lock = yield* Semaphore.make(1)
   let current: { token: Redacted.Redacted<string>; expiresAt: number; credential: Redacted.Redacted<Credential> } | undefined
-  const token = lock.withPermit(secrets.withLock(Effect.gen(function*() {
+  const matches = (stored: Redacted.Redacted<Credential>) => current && current.expiresAt - Date.now() > 120000 &&
+    Redacted.value(current.credential).userId === Redacted.value(stored).userId &&
+    Redacted.value(current.credential).refreshToken === Redacted.value(stored).refreshToken
+  const ensureSession = lock.withPermit(Effect.gen(function*() {
     const stored = yield* secrets.load
     if (!stored) { current = undefined; return yield* Effect.fail(failure("authentication", "Pocket is not signed in. Run pocket-mcp login.")) }
-    const value = Redacted.value(stored)
-    if (current && current.expiresAt - Date.now() > 120000) {
-      const previous = Redacted.value(current.credential)
-      if (previous.userId === value.userId && previous.refreshToken === value.refreshToken) return current.token
-    }
-    const renewed = yield* refreshCredential(value, fetcher)
-    yield* secrets.save(renewed.credential)
-    current = renewed
-    return renewed.token
-  })))
+    if (matches(stored)) return current!
+    return yield* secrets.withLock(Effect.gen(function*() {
+      const latest = yield* secrets.load
+      if (!latest) { current = undefined; return yield* Effect.fail(failure("authentication", "Pocket is not signed in. Run pocket-mcp login.")) }
+      if (matches(latest)) return current!
+      const renewed = yield* refreshCredential(Redacted.value(latest), fetcher)
+      yield* secrets.save(renewed.credential)
+      current = renewed
+      return renewed
+    }))
+  }))
   return {
-    token,
+    token: ensureSession.pipe(Effect.map((current) => current.token)),
     status: Effect.gen(function*() {
-      const stored = yield* secrets.load
-      if (!stored) return { authenticated: false }
-      yield* token
-      const value = Redacted.value(stored)
-      return { authenticated: true, userId: value.userId, email: value.email, expiresAt: new Date(current!.expiresAt).toISOString() }
-    }),
+      const session = yield* ensureSession
+      const value = Redacted.value(session.credential)
+      return { authenticated: true, userId: value.userId, email: value.email, expiresAt: new Date(session.expiresAt).toISOString() }
+    }).pipe(Effect.catch((error) => error.code === "authentication" ? Effect.succeed({ authenticated: false }) : Effect.fail(error))),
     invalidate: Effect.sync(() => { current = undefined })
   }
 }))

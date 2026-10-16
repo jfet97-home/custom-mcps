@@ -17,12 +17,13 @@ export const fixture = () => {
     }
   }
   const action = { id: "global-1", title: "Original action", recordingId: "recording-1", summarizationId: "summary-1", parentTaskId: "source-1", dueDate: null as string | null, status: "TODO", completedAt: null as string | null, version: 1 }
-  const state = { detail, action, requests: [] as { method: string; path: string; body?: unknown }[], backups: [] as unknown[], rejectBackup: false, failAfterWrite: false, beforeRead: undefined as (() => void) | undefined }
+  const state = { detail, action, requests: [] as { method: string; path: string; body?: unknown }[], backups: [] as unknown[], rejectBackup: false, failAfterWrite: false, beforeRead: undefined as (() => void) | undefined, afterWrite: undefined as (() => void) | undefined, readFailure: false, writeDelay: 0 }
   const transport = Layer.succeed(PocketTransport, {
     request: (method, path, body) => Effect.suspend((): Effect.Effect<unknown, PocketError> => {
       state.requests.push({ method, path, body })
       if (method === "GET") {
         state.beforeRead?.()
+        if (state.readFailure) return Effect.fail(failure("network", "Read unavailable"))
         if (path.startsWith("/api/v1/recordings/")) return Effect.succeed(structuredClone(state.detail))
         if (path.startsWith("/api/v1/recordings?")) return Effect.succeed({ data: [state.detail.recording], totalCount: 1, totalPages: 1, currentPage: 1 })
         if (path.startsWith("/api/v1/global-action-items/")) return Effect.succeed({ success: true, data: [{ parentTaskId: "source-1", subtasks: [structuredClone(state.action)] }], pagination: { limit: 100, offset: 0, total: 1, returned: 1 } })
@@ -42,6 +43,8 @@ export const fixture = () => {
       } else if (path === "/api/v1/global-action-items/global-1/complete" && method === "PATCH") {
         state.action.status = "DONE"; state.action.completedAt = new Date().toISOString()
       } else return Effect.fail(failure("upstream", "Unexpected test operation."))
+      state.afterWrite?.()
+      if (state.writeDelay > 0) return Effect.sleep(`${state.writeDelay} millis`).pipe(Effect.as({ success: true }))
       return state.failAfterWrite ? Effect.fail(failure("uncertain_write", "A test transport failed after applying the write.")) : Effect.succeed({ success: true })
     })
   })

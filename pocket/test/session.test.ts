@@ -23,11 +23,12 @@ test("Firebase renewal sends form data and accepts a rotated refresh token", asy
 test("concurrent calls share renewal, persist rotation, and observe logout immediately", async () => {
   let stored: Redacted.Redacted<Credential> | null = Redacted.make(credential)
   let renewals = 0
+  let locks = 0
   const secrets = Layer.succeed(SecretStorage, {
     load: Effect.sync(() => stored),
     save: (value) => Effect.sync(() => { stored = value }),
     remove: Effect.sync(() => { stored = null }),
-    withLock: (effect) => effect
+    withLock: (effect) => Effect.suspend(() => { locks++; return effect })
   })
   const live = makeSessionLive(async () => {
     renewals++
@@ -39,6 +40,7 @@ test("concurrent calls share renewal, persist rotation, and observe logout immed
     const tokens = yield* Effect.all(Array.from({ length: 20 }, () => session.token), { concurrency: "unbounded" })
     assert.equal(tokens.length, 20)
     assert.equal(renewals, 1)
+    assert.equal(locks, 1)
     assert.equal(stored && Redacted.value(stored).refreshToken, "rotated")
     yield* (yield* SecretStorage).remove
     const result = yield* session.token.pipe(Effect.result)

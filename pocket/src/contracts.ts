@@ -1,5 +1,5 @@
 import { Schema } from "effect"
-import { Id, Recording, Segment } from "./recording.js"
+import { Id, Recording, RecordingDetail, Segment } from "./recording.js"
 
 export const Hash = Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/))
 export const Version = Schema.Union([Schema.String, Schema.Number, Schema.Null])
@@ -13,7 +13,10 @@ export const Notes = Schema.Struct({
 export const IndexedSegment = Schema.Struct({ ...Segment.fields, segmentIndex: Schema.Number })
 export const Transcript = Schema.Struct({
   recordingId: Id, transcriptionId: Id, rowId: Id, text: Schema.String,
-  segments: Schema.Array(IndexedSegment), hash: Hash, updatedAt: Schema.NullOr(Schema.String)
+  segments: Schema.Array(IndexedSegment), hash: Hash, supportsSegmentEdits: Schema.Boolean, updatedAt: Schema.NullOr(Schema.String)
+})
+export const RecordingWithHashes = Schema.Struct({ ...RecordingDetail.fields,
+  contentHashes: Schema.Struct({ transcript: Schema.NullOr(Hash), notes: Schema.Array(Schema.Struct({ summarizationId: Id, hash: Hash })) })
 })
 export const RecordingPage = Schema.Struct({
   data: Schema.Array(Recording), totalCount: Schema.Number, totalPages: Schema.Number, currentPage: Schema.Number
@@ -23,16 +26,16 @@ export const SearchPage = Schema.Struct({
   metadata: Schema.Struct({ total: Schema.Number, page: Schema.optionalKey(Schema.Number), limit: Schema.optionalKey(Schema.Number) })
 })
 export const ActionItem = Schema.Struct({
-  id: Id, title: Schema.String,
-  recordingId: Schema.NullOr(Id), summarizationId: Schema.optionalKey(Schema.NullOr(Id)),
+  id: Id, title: Schema.NullOr(Schema.String),
+  recordingId: Schema.optionalKey(Schema.NullOr(Id)), summarizationId: Schema.optionalKey(Schema.NullOr(Id)),
   parentTaskId: Schema.optionalKey(Schema.NullOr(Id)),
   description: Schema.optionalKey(Schema.NullOr(Schema.String)),
   dueDate: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  status: Schema.optionalKey(Schema.String),
+  status: Schema.optionalKey(Schema.NullOr(Schema.String)),
   completedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  isCompleted: Schema.optionalKey(Schema.Boolean),
-  version: Schema.optionalKey(Schema.Number), updatedAt: Schema.optionalKey(Schema.String),
-  priority: Schema.optionalKey(Schema.String), category: Schema.optionalKey(Schema.String)
+  isCompleted: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+  version: Schema.optionalKey(Schema.NullOr(Schema.Number)), updatedAt: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  priority: Schema.optionalKey(Schema.NullOr(Schema.String)), category: Schema.optionalKey(Schema.NullOr(Schema.String))
 })
 export const ActionItemWithHash = Schema.Struct({ ...ActionItem.fields, hash: Hash })
 export const ActionPagination = Schema.Struct({ limit: Schema.Number, offset: Schema.Number, total: Schema.Number, returned: Schema.Number })
@@ -53,7 +56,7 @@ export const Folder: Schema.Codec<Folder> = Schema.Struct({
 })
 export const Folders = Schema.Struct({ data: Schema.Array(Folder) })
 export const Account = Schema.Struct({
-  id: Id, email: Schema.String, displayName: Schema.optionalKey(Schema.String),
+  id: Id, email: Schema.String, displayName: Schema.optionalKey(Schema.NullOr(Schema.String)),
   isActive: Schema.Boolean, authProvider: Schema.optionalKey(Schema.String),
   emailVerified: Schema.optionalKey(Schema.Boolean), timezone: Schema.optionalKey(Schema.NullOr(Schema.String)),
   subscriptionType: Schema.String
