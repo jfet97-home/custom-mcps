@@ -2,6 +2,12 @@
 
 Local MCP servers used with the Lunar MCPX gateway.
 
+New integrations follow the global `mcp-service-setup` skill, versioned in the
+Lunar checkout at `skills/mcp-service-setup/`. Agree capabilities and limits,
+repository/private paths, runtime, access and lifecycle before installation.
+Background operation and automatic startup require an explicit choice. Keep each
+service's source and deployment files here, with private runtime state outside Git.
+
 | Service | Source | Local port | Authentication storage |
 | --- | --- | --- | --- |
 | Microsoft Teams | [teams/](teams/) | 9006 | Private host environment settings and the `teams-mcp_auth` Docker volume |

@@ -1,5 +1,6 @@
 # Repository guidance
 
+- A new MCP or changed deployment architecture starts with the global `mcp-service-setup` skill. Ask unresolved questions one at a time about capabilities, limits, source/private paths, runtime, access and lifecycle before installing packages, creating setup files, registering connections or starting services. An install request alone does not authorize a host package, adapter, background process, startup job or Docker restart policy; reuse explicit choices and approvals for the agreed plan.
 - Maintain all components in this checkout on `main`; keep deployed changes in committed source.
 - Read component-level `AGENTS.md` and `CLAUDE.md` before changing that component.
 - Teams uses Python and uv; Atlassian Media uses TypeScript and npm. Run each component's declared lint, type and test checks for relevant changes.
