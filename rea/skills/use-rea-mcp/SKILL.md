@@ -46,7 +46,7 @@ assistant can read it locally.
 Once configured, the read-only input mount prevents REA from changing the staged
 inputs. REA and Ghidra write their own analysis state in separate writable
 locations. See the [deployment guide](../../README.md#targets-and-capabilities)
-for the installed engines and workspace constraints.
+for the included engines and supported analysis capabilities.
 
 ## Analyse through the existing connection
 

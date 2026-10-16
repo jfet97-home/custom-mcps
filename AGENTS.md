@@ -5,7 +5,7 @@
 - Read component-level `AGENTS.md` and `CLAUDE.md` before changing that component.
 - Teams uses Python and uv; Atlassian Media uses TypeScript and npm. Run each component's declared lint, type and test checks for relevant changes.
 - Pocket uses TypeScript, npm and native Effect v4 MCP. Its Mac service runs as a LaunchAgent with OS secret storage; keep its browser profile, session, backups and deployment state outside the checkout.
-- REA packages upstream REA and Supergateway in Docker. Keep its Compose source here, credentials outside the checkout, and the `rea-mcp` project and `rea-mcp_rea_state` volume names stable. Validate Compose and Docker build checks; no local Mac service is needed.
+- REA packages upstream REA and Supergateway in Docker. Keep its Compose source here, credentials outside the checkout, and the `rea-mcp` project and `rea-mcp_rea_state` volume names stable. Validate Compose and Docker build checks; no local Mac service is needed. Personal operating procedures belong in the global `rea-mcp` maintenance skill; keep `rea/skills/` focused on usage.
 - Keep private credentials, environment settings, token caches and diagnostic output outside Git and Docker build contexts.
 - Preserve installed Compose project names, the gateway network and the Teams authentication volume when updating deployment paths.
 - Existing nested knowledge bases are local references and remain ignored.
