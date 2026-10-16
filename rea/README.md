@@ -70,20 +70,36 @@ If container recreation leaves MCPX reporting `Session not found`, recreate only
 the `rea` connection with the URL and authentication above. Preserve its private
 key and Docker volume; a healthy container does not refresh an old MCP session.
 
-## Investigation skill
+## Investigation skills
 
-Install the matching upstream instructions through Skillshare:
+Two complementary skills cover investigation:
+
+- `reverse-engineer-anything` supplies the upstream analysis methods and evidence
+  workflows, installed from the matching REA release.
+- [use-rea-mcp](skills/use-rea-mcp/SKILL.md) supplies usage instructions for this
+  Docker/MCPX deployment, including target preparation and container paths.
+
+Install the upstream skill and link this repository's usage skill through
+Skillshare. Run from this `rea/` directory:
 
 ```sh
 skillshare install morluto/rea/.agents/skills/reverse-engineer-anything \
   --branch rea-agents-6.5.0 --yes
-skillshare sync
+skillshare link "$PWD/skills/use-rea-mcp" --name use-rea-mcp --global
+skillshare sync --global
 ```
 
 Skillshare manages the skill separately from this Docker service. The MCP
 connection stays in MCPX; installing the instructions does not add a direct
 client connection or install an analysis engine.
 
-The global source is `~/.agents/skills/reverse-engineer-anything/`; Skillshare
-links it into `~/.claude/skills/reverse-engineer-anything/`. Personal maintenance
-and setup guidance stays in global skills outside the Lunar product repository.
+The upstream copy lives in `~/.agents/skills/reverse-engineer-anything/`.
+`~/.agents/skills/use-rea-mcp` links directly to this repository's
+`rea/skills/use-rea-mcp/` source. Skillshare exposes both through links under
+`~/.claude/skills/`. Personal maintenance and setup policies stay in global skills.
+
+The target-preparation workflow is recorded in `use-rea-mcp`, but this deployment
+has no `/targets` bind mount yet. Choose the host folder outside Git and configure
+its read-only mount before using that workflow. With the mapping in place, a local
+assistant can stage a selected app and pass its container path to REA; an MCP-only
+client cannot copy arbitrary files from the Mac.
