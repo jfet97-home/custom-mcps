@@ -467,7 +467,8 @@ test("closing the service scope marks an in-flight query uncertain", async () =>
   }
 })
 
-test("stale intent and streaming records normalize to uncertain without changing completed or live records", async () => {
+test("stale intent and streaming records normalize to uncertain without changing completed or live records", async (context) => {
+  context.mock.timers.enable({ apis: ["Date"], now: Date.UTC(2026, 9, 16, 12) })
   let calls = 0
   const fetcher: typeof fetch = async () => {
     calls++
@@ -535,6 +536,12 @@ test("stale intent and streaming records normalize to uncertain without changing
 
     const raw = JSON.parse(await readFile(join(fixture.dataDir, "meeting-queries", staleStreaming.entry.operationId + ".json"), "utf8")) as Record<string, unknown>
     assert.equal(raw.status, "streaming")
+
+    context.mock.timers.tick(staleAfterMs)
+    assert.equal((await journal.lookup(liveStreaming.entry.operationId)).status, "streaming")
+    context.mock.timers.tick(1)
+    assert.equal((await journal.lookup(liveStreaming.entry.operationId)).status, "uncertain")
+    assert.equal((await journal.lookup(completed.entry.operationId)).status, "complete")
   } finally {
     await fixture.cleanup()
   }
