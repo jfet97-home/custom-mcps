@@ -82,13 +82,33 @@ For another named template, use its available description to adapt the outline.
 Ask for missing instructions only when they materially affect the result. Do not
 claim to execute Pocket's native template pipeline or reproduce a hidden prompt.
 
+## Add the requested footer
+
+End the revised Notes with one separate attribution line:
+
+```text
+Written by {model version} through MCPX — {YYYY-MM-DD HH:mm:ss} {time zone} ({UTC offset})
+```
+
+Use the actual model identifier/version supplied by the current runtime. Read
+the current clock when preparing the save and use the user's configured time
+zone, normally `Europe/Rome` for this setup. Include the UTC offset so daylight
+saving time is unambiguous. The timestamp describes this edit, not the recording
+date. If the runtime does not expose its model version, state that it is unknown
+instead of guessing.
+
+Keep a single current footer from this workflow, replacing its previous footer
+on later revisions while preserving unrelated content. This requested
+attribution applies to Pocket Notes, not to commit messages or pull requests.
+
 ## Save and verify
 
 A request to update Notes authorizes saving the completed synthesis. A request
 for recommendations or a draft alone does not authorize replacing stored Notes.
 
-1. Prepare the complete replacement Markdown. Check that it retains meaningful
-   additions from the existing Notes and reflects the transcript faithfully.
+1. Prepare the complete replacement Markdown, including the current footer.
+   Check that it retains meaningful additions from the existing Notes and
+   reflects the transcript faithfully.
 2. Reread the selected Notes and transcript immediately before saving. Compare
    their hashes and identities with the sources used for the draft. If either
    changed, incorporate the changes and revise the draft before proceeding;

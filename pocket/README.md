@@ -231,6 +231,8 @@ one revised document. It includes Deep Summary and Action Summary outlines,
 preserves existing additions and uncertainty, and checks both sources before
 saving with a private backup and a final reread. These outlines follow the
 template descriptions; they do not reproduce Pocket's hidden backend prompts.
+Revised Notes end with the runtime model version, MCPX attribution and the edit
+date and time, including the user's time zone and UTC offset.
 
 Install and sync both skills globally on the Mac with Skillshare:
 
