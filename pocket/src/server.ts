@@ -5,16 +5,30 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/http"
 import { NodeHttpServer, NodeStdio } from "@effect/platform-node"
 import { failure, PocketError, Settings } from "./core.js"
 import { Pocket } from "./pocket.js"
-import { Account, ActionPage, Folders, Hash, Notes, RecordingPage, RecordingWithHashes, SearchPage, Spaces, Transcript, WriteResult } from "./contracts.js"
+import {
+  Account, ActionPage, ArchiveBackfillResult, ArchiveBridgeSyncResult, ArchiveDraftResult, ArchiveEventRead,
+  ArchiveJob, ArchiveJobClaim, ArchiveJobFinishResult, ArchiveJobSaveResult, ArchiveRecordingRead, ArchiveSearchResult,
+  ArchiveSourcePage, ArchiveStatus, Folders, Hash, Notes, RecordingPage, RecordingWithHashes, SearchPage, Spaces,
+  Transcript, WriteResult
+} from "./contracts.js"
 import { Id } from "./recording.js"
 import { authorized, HttpAuthorization, HttpAuthorizationLive } from "./http-auth.js"
+import { ArchiveWorkflow } from "./archive-workflow.js"
 
 const positive = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100000 }))
 const limit = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 }))
 const offset = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 1000000 }))
 const markdown = Schema.String.check(Schema.isMaxLength(2000000))
 const text = Schema.String.check(Schema.isMaxLength(100000))
+const archiveLimit = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 }))
+const archiveOffset = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 1000000 }))
+const sourceCursor = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 100000000 }))
+const sourcePageLimit = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 12000 }))
+const archiveMarkdown = Schema.String.check(Schema.isMaxLength(2000000))
+const leaseToken = Schema.NonEmptyString.check(Schema.isMaxLength(128))
+const fence = Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 2147483647 }))
 const common = { failure: PocketError, dependencies: [Pocket] }
+const archiveCommon = { failure: PocketError, dependencies: [ArchiveWorkflow] }
 
 export const toolkit = Toolkit.make(
   Tool.make("list_recordings", {
@@ -63,7 +77,67 @@ export const toolkit = Toolkit.make(
   }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
   Tool.make("get_account_info", {
     ...common, description: "Read only account identity, activity, authentication-provider name, timezone and subscription type. Excludes credentials, push tokens, billing and member data.", parameters: Tool.EmptyParams, success: Account
-  }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true)
+  }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_search", {
+    ...archiveCommon, description: "Search only the private local archive across recording metadata, complete transcript versions, original Notes versions, drafts and final Notes. Results include a short excerpt; use archive_read for the complete stored content.",
+    parameters: Schema.Struct({ query: Schema.NonEmptyString.check(Schema.isMaxLength(1000)), limit: Schema.optionalKey(archiveLimit), offset: Schema.optionalKey(archiveOffset) }), success: ArchiveSearchResult
+  }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_read", {
+    ...archiveCommon, description: "Read complete local API snapshots, every archived transcript and Notes version, webhook payloads with exact raw bytes, drafts, and job state for a recording. It remains available after Pocket expiry or deletion.",
+    parameters: Schema.Struct({ recordingId: Id, limit: Schema.optionalKey(archiveLimit) }), success: ArchiveRecordingRead
+  }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_read_event", {
+    ...archiveCommon, description: "Read one exact archived Pocket webhook event, including its parsed payload, original raw body bytes, processing state and linked jobs.",
+    parameters: Schema.Struct({ eventId: Hash }), success: ArchiveEventRead
+  }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_status", {
+    ...archiveCommon, description: "Read local archive counts, backfill progress, bridge sync health, pending job and lease counts, and whether remote Notes writes are enabled.",
+    parameters: Tool.EmptyParams, success: ArchiveStatus
+  }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_backfill", {
+    ...archiveCommon, description: "Page through existing Pocket recordings and archive every available original transcript and Notes version. This is snapshot-only: it does not enqueue jobs or rewrite historical Notes. Progress resumes from the local page cursor.",
+    parameters: Schema.Struct({ maxPages: Schema.optionalKey(Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 20 }))), startPage: Schema.optionalKey(positive) }), success: ArchiveBackfillResult
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_sync_bridge", {
+    ...archiveCommon, description: "Fetch a bounded number of pages from the private Pi bridge, transactionally archive exact webhook bodies, create deduplicated jobs for supported events and acknowledge each event only after local persistence.",
+    parameters: Schema.Struct({ maxPages: Schema.optionalKey(Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 20 }))) }), success: ArchiveBridgeSyncResult
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_jobs", {
+    ...archiveCommon, description: "Inspect durable job state, lease expiry, fencing token, attempts, last safe error, draft ID and uncertain-write reconciliation state. Draft contents are available through archive_read.",
+    parameters: Schema.Struct({ recordingId: Schema.optionalKey(Id), limit: Schema.optionalKey(archiveLimit) }), success: Schema.Array(ArchiveJob)
+  }).annotate(Tool.Readonly, true).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_job_claim", {
+    ...archiveCommon, description: "Sync the Pi event queue before claiming the oldest eligible job. Claims serialize per recording and return a renewable 30-minute lease token and fencing token. Only one job can be active for a recording.",
+    parameters: Tool.EmptyParams, success: ArchiveJobClaim
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, false),
+  Tool.make("archive_job_renew", {
+    ...archiveCommon, description: "Renew a still-active job lease. Every later operation must include the same lease token and fencing token.",
+    parameters: Schema.Struct({ jobId: Schema.NonEmptyString, leaseToken, fencingToken: fence }), success: ArchiveJobClaim
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_job_sources", {
+    ...archiveCommon, description: "Capture and archive a fresh complete transcript and selected full Notes document before synthesis, then serve only the requested source page. Pages are at most 12,000 Unicode characters; follow nextCursor to the end of each source. Use the returned contextId for all pages and draft preparation. The server records page coverage and hashes.",
+    parameters: Schema.Struct({ jobId: Schema.NonEmptyString, leaseToken, fencingToken: fence, source: Schema.Literals(["transcript", "notes"]), contextId: Schema.optionalKey(Schema.NonEmptyString), cursor: Schema.optionalKey(sourceCursor), limit: Schema.optionalKey(sourcePageLimit), summarizationId: Schema.optionalKey(Id) }), success: ArchiveSourcePage
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_job_prepare_draft", {
+    ...archiveCommon, description: "Persist a complete proposed Markdown draft before any Pocket write. Preparation fails until every page of both the transcript and Notes source context has been served. Drafts cannot be empty; much shorter replacements require allowShorter=true.",
+    parameters: Schema.Struct({ jobId: Schema.NonEmptyString, leaseToken, fencingToken: fence, contextId: Schema.NonEmptyString, markdown: archiveMarkdown, allowShorter: Schema.optionalKey(Schema.Boolean) }), success: ArchiveDraftResult
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, false),
+  Tool.make("archive_job_save", {
+    ...archiveCommon, description: "Save only the previously persisted draftId for this leased job. The server rechecks complete transcript and Notes hashes, verifies ownership and fencing, atomically marks the job saving before the remote request, and uses Pocket's existing backed-up verified Notes writer. Writes require writesEnabled=true in private bridge.json; uncertain results must be reconciled before the single permitted retry.",
+    parameters: Schema.Struct({ jobId: Schema.NonEmptyString, leaseToken, fencingToken: fence, draftId: Schema.NonEmptyString }), success: ArchiveJobSaveResult
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, true).annotate(Tool.Idempotent, false),
+  Tool.make("archive_job_reconcile", {
+    ...archiveCommon, description: "Reread and archive complete current transcript and Notes after a possible write. It finalizes an exact normalized draft match, allows one explicit retry only when both original source hashes are unchanged, and otherwise records terminal conflict while preserving the draft.",
+    parameters: Schema.Struct({ jobId: Schema.NonEmptyString, leaseToken, fencingToken: fence, draftId: Schema.NonEmptyString }), success: ArchiveJobSaveResult
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, true),
+  Tool.make("archive_job_finish", {
+    ...archiveCommon, description: "Close a leased job as needs_review, source_gone or skipped. All linked Pi events are marked complete while local snapshots and drafts remain archived.",
+    parameters: Schema.Struct({ jobId: Schema.NonEmptyString, leaseToken, fencingToken: fence, state: Schema.Literals(["needs_review", "source_gone", "skipped"]), reason: Schema.String.check(Schema.isMaxLength(1000)) }), success: ArchiveJobFinishResult
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, false),
+  Tool.make("archive_job_retry", {
+    ...archiveCommon, description: "Explicitly requeue a failed or terminal conflict job after inspecting its local draft and status. Uncertain writes cannot be retried through this tool; reconcile them first.",
+    parameters: Schema.Struct({ jobId: Schema.NonEmptyString }), success: ArchiveJob
+  }).annotate(Tool.Readonly, false).annotate(Tool.Destructive, false).annotate(Tool.Idempotent, false)
 )
 
 export const handlers = toolkit.toLayer({
@@ -78,7 +152,27 @@ export const handlers = toolkit.toLayer({
   update_action_item: (input) => Pocket.use((p) => p.updateActionItem(input)),
   list_folders: () => Pocket.use((p) => p.listFolders),
   list_spaces: () => Pocket.use((p) => p.listSpaces),
-  get_account_info: () => Pocket.use((p) => p.account)
+  get_account_info: () => Pocket.use((p) => p.account),
+  archive_search: (input) => ArchiveWorkflow.use((archive) => archive.search({ query: input.query, limit: input.limit ?? 20, offset: input.offset ?? 0 })),
+  archive_read: (input) => ArchiveWorkflow.use((archive) => archive.read({ recordingId: input.recordingId, limit: input.limit ?? 20 })),
+  archive_read_event: ({ eventId }) => ArchiveWorkflow.use((archive) => archive.readEvent(eventId)),
+  archive_status: () => ArchiveWorkflow.use((archive) => archive.status),
+  archive_backfill: (input) => ArchiveWorkflow.use((archive) => archive.backfill({ maxPages: input.maxPages ?? 1, ...(input.startPage === undefined ? {} : { startPage: input.startPage }) })),
+  archive_sync_bridge: (input) => ArchiveWorkflow.use((archive) => archive.syncBridge(input.maxPages ?? 5)),
+  archive_jobs: (input) => ArchiveWorkflow.use((archive) => archive.jobs({ ...(input.recordingId === undefined ? {} : { recordingId: input.recordingId }), limit: input.limit ?? 20 })),
+  archive_job_claim: () => ArchiveWorkflow.use((archive) => archive.claimJob),
+  archive_job_renew: (input) => ArchiveWorkflow.use((archive) => archive.renewJob(input)),
+  archive_job_sources: (input) => ArchiveWorkflow.use((archive) => archive.sources({
+    ...input, limit: input.limit ?? 12000,
+    ...(input.contextId === undefined ? {} : { contextId: input.contextId }),
+    ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+    ...(input.summarizationId === undefined ? {} : { summarizationId: input.summarizationId })
+  })),
+  archive_job_prepare_draft: (input) => ArchiveWorkflow.use((archive) => archive.prepareDraft({ ...input, allowShorter: input.allowShorter ?? false })),
+  archive_job_save: (input) => ArchiveWorkflow.use((archive) => archive.save(input)),
+  archive_job_reconcile: (input) => ArchiveWorkflow.use((archive) => archive.reconcile(input)),
+  archive_job_finish: (input) => ArchiveWorkflow.use((archive) => archive.finish(input)),
+  archive_job_retry: ({ jobId }) => ArchiveWorkflow.use((archive) => archive.retry(jobId))
 })
 
 const options = {
@@ -105,8 +199,10 @@ const localOnly = HttpRouter.middleware((http) => Effect.gen(function*() {
 
 export const serverProgram = (stdio: boolean, authLayer = HttpAuthorizationLive) => Effect.gen(function*() {
   const settings = yield* Settings
+  const archiveWorkflow = yield* ArchiveWorkflow
   const registered = McpServer.toolkit(toolkit).pipe(Layer.provide(handlers))
   if (stdio) return yield* Effect.scoped(Effect.gen(function*() {
+    yield* archiveWorkflow.start
     const drained = yield* Deferred.make<void, PocketError>()
     const original = yield* Stdio.Stdio
     const observed = Stdio.make({ ...original, stdout: (options) => original.stdout(options).pipe(Sink.onExit((exit) => Exit.isSuccess(exit) ? Deferred.succeed(drained, undefined) : Deferred.fail(drained, failure("configuration", "The MCP output stream closed before protocol draining completed.")))) })
@@ -120,6 +216,7 @@ export const serverProgram = (stdio: boolean, authLayer = HttpAuthorizationLive)
     ), { disableLogger: true, disableListenLog: true, middleware: (http) => http.pipe(Effect.provideService(HttpServerRequest.MaxBodySize, ByteSize.mebibytes(12))) })
     .pipe(Layer.provide(authLayer), Layer.provide(NodeHttpServer.layer(createServer, { host: settings.host ?? "127.0.0.1", port: settings.port })))
   yield* Effect.scoped(Effect.gen(function*() {
+    yield* archiveWorkflow.start
     yield* Layer.build(server)
     yield* Effect.sync(() => { process.stderr.write(`Pocket MCP ready (${settings.host ?? "127.0.0.1"}:${settings.port}).\n`) })
     yield* Effect.never

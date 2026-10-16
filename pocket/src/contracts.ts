@@ -67,3 +67,70 @@ export const WriteResult = Schema.Struct({
   recordingId: Id, hash: Hash, backupId: Schema.String,
   concurrency: Schema.Literal("client_side_compare"), verified: Schema.Literal(true)
 })
+
+export const ArchiveSource = Schema.Literals(["backfill", "workflow", "draft", "final"])
+export const ArchiveSnapshotInput = Schema.Struct({
+  recordingId: Id, capturedAt: Schema.String, metadata: Schema.Unknown, raw: Schema.Unknown,
+  transcript: Schema.NullOr(Transcript), notes: Schema.Array(Notes), source: Schema.Literals(["backfill", "workflow"]),
+  decodeError: Schema.optionalKey(Schema.String)
+})
+export const ArchiveSearchResult = Schema.Struct({
+  results: Schema.Array(Schema.Struct({ recordingId: Id, title: Schema.NullOr(Schema.String), kind: Schema.String, excerpt: Schema.String, capturedAt: Schema.String })),
+  pagination: Schema.Struct({ limit: Schema.Number, offset: Schema.Number, total: Schema.Number })
+})
+export const ArchiveRecordingRead = Schema.Struct({
+  recordingId: Id, metadata: Schema.Unknown, firstSeenAt: Schema.String, lastSeenAt: Schema.String,
+  snapshots: Schema.Array(Schema.Struct({ capturedAt: Schema.String, source: Schema.String, raw: Schema.Unknown })),
+  transcriptVersions: Schema.Array(Schema.Struct({ capturedAt: Schema.String, source: Schema.String, transcript: Transcript })),
+  notesVersions: Schema.Array(Schema.Struct({ capturedAt: Schema.String, source: ArchiveSource, notes: Notes })),
+  events: Schema.Array(Schema.Struct({ id: Schema.String, receivedAt: Schema.String, eventType: Schema.NullOr(Schema.String), state: Schema.String, payload: Schema.Unknown, rawBodyBase64: Schema.String })),
+  drafts: Schema.Array(Schema.Struct({ id: Schema.String, savedAt: Schema.String, hash: Hash, markdown: Schema.String, contextId: Schema.String })),
+  jobs: Schema.Array(Schema.Struct({ id: Schema.String, eventType: Schema.String, state: Schema.String, createdAt: Schema.String, updatedAt: Schema.String, attempts: Schema.Number, lastError: Schema.NullOr(Schema.String) }))
+})
+export const ArchiveEventRead = Schema.Struct({
+  id: Schema.String, receivedAt: Schema.String, eventType: Schema.NullOr(Schema.String), recordingId: Schema.NullOr(Id),
+  state: Schema.String, payload: Schema.Unknown, rawBodyBase64: Schema.String, jobIds: Schema.Array(Schema.String)
+})
+export const ArchiveStatus = Schema.Struct({
+  recordings: Schema.Number, apiSnapshots: Schema.Number, transcriptVersions: Schema.Number,
+  notesVersions: Schema.Number, webhookEvents: Schema.Number, queuedJobs: Schema.Number,
+  activeLeases: Schema.Number, failedJobs: Schema.Number, lastBridgeSyncAt: Schema.NullOr(Schema.String),
+  bridgeConfigured: Schema.Boolean, bridgeLastError: Schema.NullOr(Schema.String), writesEnabled: Schema.Boolean,
+  backfill: Schema.Struct({ nextPage: Schema.Number, complete: Schema.Boolean, lastRunAt: Schema.NullOr(Schema.String), failedRecordings: Schema.Array(Schema.Struct({ recordingId: Id, code: Schema.String })) })
+})
+export const ArchiveBackfillResult = Schema.Struct({
+  pagesRead: Schema.Number, recordingsRead: Schema.Number, snapshotsWritten: Schema.Number,
+  nextPage: Schema.Number, complete: Schema.Boolean,
+  failedRecordings: Schema.Array(Schema.Struct({ recordingId: Id, code: Schema.String }))
+})
+export const ArchiveJob = Schema.Struct({
+  id: Schema.String, recordingId: Id, eventType: Schema.String, state: Schema.String,
+  createdAt: Schema.String, updatedAt: Schema.String, attempts: Schema.Number,
+  fencingToken: Schema.Number, leaseUntil: Schema.NullOr(Schema.String), lastError: Schema.NullOr(Schema.String),
+  draftId: Schema.NullOr(Schema.String), reconcileState: Schema.NullOr(Schema.String)
+})
+export const ArchiveJobClaim = Schema.Struct({
+  job: Schema.NullOr(ArchiveJob), leaseToken: Schema.NullOr(Schema.String), fencingToken: Schema.NullOr(Schema.Number), leaseUntil: Schema.NullOr(Schema.String)
+})
+export const ArchiveJobContext = Schema.Struct({
+  contextId: Schema.String, jobId: Schema.String, recordingId: Id, transcript: Transcript,
+  notes: Notes, capturedAt: Schema.String
+})
+export const ArchiveSourcePage = Schema.Struct({
+  contextId: Schema.String, jobId: Schema.String, recordingId: Id, transcriptionId: Id, transcriptHash: Hash,
+  summarizationId: Id, notesHash: Hash,
+  source: Schema.Literals(["transcript", "notes"]), cursor: Schema.Number, nextCursor: Schema.NullOr(Schema.Number),
+  totalCharacters: Schema.Number, sourceHash: Hash, chunkHash: Hash, content: Schema.String
+})
+export const ArchiveDraftResult = Schema.Struct({ draftId: Schema.String, hash: Hash, savedAt: Schema.String, state: Schema.String })
+export const ArchiveJobSaveResult = Schema.Struct({
+  state: Schema.Literals(["complete", "uncertain", "conflict", "source_gone", "needs_review"]), jobId: Schema.String,
+  recordingId: Id, draftId: Schema.String, reconciliation: Schema.NullOr(Schema.String),
+  notesHash: Schema.NullOr(Hash), retryAllowed: Schema.Boolean
+})
+export const ArchiveJobFinishResult = Schema.Struct({ jobId: Schema.String, state: Schema.Literals(["needs_review", "source_gone", "skipped"]), eventsCompleted: Schema.Boolean })
+export const ArchiveBridgeSyncResult = Schema.Struct({
+  configured: Schema.Boolean, pagesRead: Schema.Number, eventsRead: Schema.Number,
+  archived: Schema.Number, completed: Schema.Number, jobsCreated: Schema.Number,
+  lastCursor: Schema.NullOr(Schema.String), lastError: Schema.NullOr(Schema.String)
+})

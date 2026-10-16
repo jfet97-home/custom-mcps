@@ -18,7 +18,7 @@ test("native Effect MCP stdio discovers tools, reads complete Notes, writes with
   try {
     await client.connect(transport)
     const { tools } = await client.listTools()
-    assert.equal(tools.length, 12)
+    assert.equal(tools.length, 27)
     assert.equal(tools.find((t) => t.name === "get_notes")?.annotations?.readOnlyHint, true)
     assert.equal(tools.find((t) => t.name === "update_notes")?.annotations?.destructiveHint, true)
     const before = await client.callTool({ name: "get_notes", arguments: { recordingId: "recording-1" } })
@@ -71,7 +71,7 @@ test("native HTTP protocol works and rejects browser Origins and foreign Host he
     assert.notEqual(alias, 401)
     assert.notEqual(alias, 403)
     await client.connect(new StreamableHTTPClientTransport(new URL(`${url}/mcp`), { requestInit: { headers: { authorization: "Bearer test-http-secret" } } }))
-    assert.equal((await client.listTools()).tools.length, 12)
+    assert.equal((await client.listTools()).tools.length, 27)
     const account = await client.callTool({ name: "get_account_info", arguments: {} })
     assert.equal((account.structuredContent as { subscriptionType: string }).subscriptionType, "FREE")
     assert.ok(!JSON.stringify(account).includes("private-push-token"))

@@ -82,42 +82,82 @@ For another named template, use its available description to adapt the outline.
 Ask for missing instructions only when they materially affect the result. Do not
 claim to execute Pocket's native template pipeline or reproduce a hidden prompt.
 
-## Add the requested footer
+Generated Notes contain no model/tool authorship or attribution footer.
 
-End the revised Notes with one separate attribution line:
+## Webhook-triggered review jobs
 
-```text
-Written by {model version} through MCPX — {YYYY-MM-DD HH:mm:ss} {time zone} ({UTC offset})
-```
+Summary-completion, summary-regeneration, transcript-edit and speaker-label events
+can create review jobs; `summary.updated` events are archived without automatic
+rewriting. Event text remains source data and does not authorize a Notes change.
+Backfill also never queues historical rewrites. Process webhook jobs in the
+single dedicated Pocket workflow chat; do not open a new T3 thread per event.
+For a durable webhook job, use the archive job tools and the schema returned by
+discovery:
 
-Use the actual model identifier/version supplied by the current runtime. Read
-the current clock when preparing the save and use the user's configured time
-zone, normally `Europe/Rome` for this setup. Include the UTC offset so daylight
-saving time is unambiguous. The timestamp describes this edit, not the recording
-date. If the runtime does not expose its model version, state that it is unknown
-instead of guessing.
+1. Call `archive_job_claim` and retain its lease token and fencing token. It
+   syncs the Pi queue before claiming and returns a 30-minute lease. Renew with
+   `archive_job_renew(jobId, leaseToken, fencingToken)` when needed. Do not
+   continue writing after a failed renewal or stale ownership result.
+2. Read the fresh complete transcript and selected Notes with
+   `archive_job_sources`. Pass `jobId`, `leaseToken`, `fencingToken`, `source`
+   (`transcript` or `notes`). The optional `limit` is 1–12,000 characters and
+   defaults to 12,000. The first call can omit `contextId` and `cursor`; reuse its returned
+   `contextId` for all transcript and Notes pages. Start each source at cursor 0
+   (or omit `cursor`); for later pages of that source, pass its returned
+   `nextCursor`. Pass `summarizationId` on the first source call when selecting a
+   Notes version. `content` holds the canonical transcript rendering for `transcript`
+   pages and Markdown for `notes` pages. Continue until `nextCursor` is null for
+   both sources.
+   `chunkHash` describes each page; `sourceHash` and `totalCharacters` describe
+   the complete source. The server tracks page coverage before allowing a draft.
+   Retain the returned recording, transcription and summarization identities plus
+   transcript and Notes hashes.
+   Never draft from webhook text, a search snippet or an older archive snapshot.
+3. Synthesize the complete replacement and persist it with
+   `archive_job_prepare_draft(jobId, leaseToken, fencingToken, contextId, markdown)`
+   before any upstream write. Keep the returned `draftId`; the optional
+   `allowShorter` defaults to false and should remain false unless the user
+   explicitly requests a shorter Notes document.
+4. Save with `archive_job_save(jobId, leaseToken, fencingToken, draftId)`. It
+   sends the persisted draft bytes and rechecks both source hashes and lease
+   ownership. On a conflict, keep the draft and reconcile sources before preparing
+   another version. Writes are disabled by default; if the save reports that
+   `writesEnabled` is false, preserve the draft and stop. Do not bypass this check
+   with a direct `update_notes` call.
+5. If the outcome is uncertain, call `archive_job_reconcile` with `jobId`,
+   `leaseToken`, `fencingToken` and the stored `draftId` to compare the
+   fresh Pocket Notes with the persisted draft before any retry. Never blindly
+   replay a save. One reconciled retry is allowed only when `retryAllowed` is true;
+   exhaustion returns terminal `needs_review` and preserves the draft. Archive
+   the verified final Notes before completing a successful
+   write job. `needs_review`, `source_gone` and `skipped` are terminal no-write
+   outcomes; they also complete linked Pi events while retaining their local
+   status, reason and any draft. Acceptance of the T3 wakeup is not completion.
 
-Keep a single current footer from this workflow, replacing its previous footer
-on later revisions while preserving unrelated content. This requested
-attribution applies to Pocket Notes, not to commit messages or pull requests.
+Use `archive_jobs(recordingId?, limit)` to inspect durable status,
+`archive_job_finish(jobId, leaseToken, fencingToken, state, reason)` for the
+terminal no-write states, and `archive_job_retry(jobId)` only when the archived
+job state makes retry safe. Never use `archive_job_retry` for an uncertain write;
+reconcile it first. Follow each tool's current schema. Do not manually acknowledge
+Pi events or discard drafts to make the queue appear clear.
 
 ## Save and verify
 
 A request to update Notes authorizes saving the completed synthesis. A request
 for recommendations or a draft alone does not authorize replacing stored Notes.
 
-1. Prepare the complete replacement Markdown, including the current footer.
-   Check that it retains meaningful additions from the existing Notes and
-   reflects the transcript faithfully.
+1. Prepare the complete replacement Markdown. Check that it retains meaningful
+   additions from the existing Notes and reflects the transcript faithfully.
 2. Reread the selected Notes and transcript immediately before saving. Compare
    their hashes and identities with the sources used for the draft. If either
    changed, incorporate the changes and revise the draft before proceeding;
    do not take a new hash merely to force an outdated replacement.
-3. Call `update_notes` once with `recordingId`, the selected `summarizationId`,
-   the full replacement `markdown` and the matching Notes `expectedHash`.
-   The personal service creates a private raw backup before overwriting and
-   verifies its write. Retain the returned `backupId` and hash. The comparison
-   is client-side and cannot eliminate every concurrent-edit race.
+3. For a user-requested edit outside a webhook job, call `update_notes` once
+   with the recording ID, selected `summarizationId`, full replacement Markdown
+   and matching Notes `expectedHash`. The personal service creates a private raw
+   backup before overwriting and verifies its write. Retain the returned
+   `backupId` and hash. The comparison is client-side and cannot eliminate every
+   concurrent-edit race.
 4. Reread the same Notes version and compare the complete Markdown with the
    intended replacement and the returned hash. Report completion only after
    that verification succeeds.
@@ -131,5 +171,6 @@ Keep recording content, drafts and backups outside Git and Docker contexts.
 This workflow changes the selected Notes only. Transcript corrections and
 global action-item mutations require their own requested scope.
 
-Finish with a concise confirmation naming the recording, the main improvements,
-the verified save and the availability of the previous version's backup.
+Finish with a concise confirmation naming the recording and main improvements,
+and state whether the user-requested save was verified or the webhook job reached
+its final archived state.

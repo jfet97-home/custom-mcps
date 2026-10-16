@@ -12,6 +12,13 @@ export const contentHash = (value: string | unknown): string => createHash("sha2
   .update(typeof value === "string" ? value : canonicalJson(value))
   .digest("hex")
 
+export const normalizeMarkdown = (value: string): string => value
+  .replace(/\r\n?/g, "\n")
+  .split("\n")
+  .map((line) => line.replace(/[\t ]+$/g, ""))
+  .join("\n")
+  .replace(/\n+$/g, "")
+
 export class Backups extends Context.Service<Backups, {
   readonly save: (kind: "notes" | "transcript" | "action_item", recordingId: string, content: unknown, summarizationId?: string) => Effect.Effect<{ backupId: string }, PocketError>
 }>()("pocket/Backups") {}

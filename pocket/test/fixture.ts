@@ -17,19 +17,37 @@ export const fixture = () => {
     }
   }
   const action = { id: "global-1", title: "Original action", recordingId: "recording-1", summarizationId: "summary-1", parentTaskId: "source-1", dueDate: null as string | null, status: "TODO", completedAt: null as string | null, version: 1 }
-  const state = { detail, action, requests: [] as { method: string; path: string; body?: unknown }[], backups: [] as unknown[], rejectBackup: false, failAfterWrite: false, beforeRead: undefined as (() => void) | undefined, afterWrite: undefined as (() => void) | undefined, readFailure: false, writeDelay: 0 }
+  const state = {
+    detail, action, additionalRecordings: [] as { id: string; title?: string | null }[], failDetailIds: new Set<string>(),
+    malformedDetailIds: new Set<string>(), detailGone: false, requests: [] as { method: string; path: string; body?: unknown }[],
+    backups: [] as unknown[], rejectBackup: false, failAfterWrite: false, failBeforeWrite: false,
+    beforeRead: undefined as (() => void) | undefined, afterWrite: undefined as (() => void) | undefined,
+    readFailure: false, writeDelay: 0
+  }
   const request: PreparedRequest = (method, path, body) => Effect.suspend((): Effect.Effect<unknown, PocketError> => {
       state.requests.push({ method, path, body })
       if (method === "GET") {
         state.beforeRead?.()
         if (state.readFailure) return Effect.fail(failure("network", "Read unavailable"))
-        if (path.startsWith("/api/v1/recordings/")) return Effect.succeed(structuredClone(state.detail))
-        if (path.startsWith("/api/v1/recordings?")) return Effect.succeed({ data: [state.detail.recording], totalCount: 1, totalPages: 1, currentPage: 1 })
+        if (path.startsWith("/api/v1/recordings/")) {
+          const recordingId = decodeURIComponent(path.slice("/api/v1/recordings/".length).split("?")[0]!)
+          if (state.failDetailIds.has(recordingId) || recordingId === state.detail.recording.id && state.detailGone) return Effect.fail(failure("upstream", "Recording unavailable", 404))
+          if (state.malformedDetailIds.has(recordingId)) return Effect.succeed({ recording: { id: recordingId, title: 42 } })
+          if (recordingId === state.detail.recording.id) return Effect.succeed(structuredClone(state.detail))
+          const metadata = state.additionalRecordings.find((item) => item.id === recordingId)
+          if (!metadata) return Effect.fail(failure("upstream", "Recording unavailable", 404))
+          return Effect.succeed({ ...structuredClone(state.detail), recording: { ...state.detail.recording, ...metadata } })
+        }
+        if (path.startsWith("/api/v1/recordings?")) {
+          const data = [state.detail.recording, ...state.additionalRecordings]
+          return Effect.succeed({ data, totalCount: data.length, totalPages: 1, currentPage: 1 })
+        }
         if (path.startsWith("/api/v1/global-action-items/")) return Effect.succeed({ success: true, data: [{ parentTaskId: "source-1", subtasks: [structuredClone(state.action)] }], pagination: { limit: 100, offset: 0, total: 1, returned: 1 } })
         if (path === "/api/v1/users/current/profile") return Effect.succeed({ id: "user-1", email: "test@example.com", isActive: true, subscriptionType: "FREE", fcmToken: "private-push-token" })
         if (path === "/api/v1/folders") return Effect.succeed({ data: [] })
         if (path === "/api/v1/organization/current") return Effect.succeed({ organization: null })
       }
+      if (method !== "GET" && state.failBeforeWrite) return Effect.fail(failure("uncertain_write", "A test transport failed before applying a write."))
       if (path === "/api/v1/summarize/summary-1/markdown" && method === "PATCH") {
         state.detail.summarizations["summary-map-key"].v2.summary.markdown = (body as { markdown: string }).markdown
       } else if (path === "/api/v1/transcript-edit/recording-1/batch" && method === "POST") {

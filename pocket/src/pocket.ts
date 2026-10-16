@@ -1,7 +1,7 @@
 import { Cause, Context, Effect, Layer, Schema, Semaphore } from "effect"
 import { Backups, contentHash } from "./backups.js"
 import { decode, failure, PocketError } from "./core.js"
-import { Account, ActionItem, ActionPage, Folders, RawActionPage, RecordingPage, SearchPage, Space } from "./contracts.js"
+import { Account, ActionItem, ActionPage, ArchiveSnapshotInput, Folders, RawActionPage, RecordingPage, SearchPage, Space } from "./contracts.js"
 import { Id, notesFrom, RecordingDetail, transcriptFrom } from "./recording.js"
 import { PocketTransport, type PreparedRequest } from "./transport.js"
 
@@ -11,7 +11,7 @@ export const checked = <A>(f: () => A): Effect.Effect<A, PocketError> => Effect.
 
 export interface RecordingQuery { readonly page?: number; readonly limit?: number; readonly folderId?: string }
 export interface SearchQuery { readonly query: string; readonly limit?: number; readonly workspaceId?: string }
-export interface NotesUpdate { readonly recordingId: string; readonly summarizationId: string; readonly markdown: string; readonly expectedHash: string }
+export interface NotesUpdate { readonly recordingId: string; readonly summarizationId: string; readonly markdown: string; readonly expectedHash: string; readonly expectedRowId?: string }
 export interface TranscriptEdit {
   readonly recordingId: string; readonly expectedHash: string; readonly allowOriginalTextOverwrite?: boolean
   readonly corrections: ReadonlyArray<{ readonly segmentIndex: number; readonly text: string }>
@@ -134,11 +134,36 @@ const makePocket = Effect.gen(function*() {
         } }
       })
     }),
+    archiveSnapshot: (recordingId: string, source: "backfill" | "workflow") => Effect.gen(function*() {
+      const raw = yield* detail(recordingId)
+      return yield* checked(() => {
+        const capturedAt = new Date().toISOString()
+        try {
+          const value = decode(RecordingDetail, raw)
+          if (value.recording.id !== recordingId) throw failure("upstream", "Pocket returned a different recording than the requested ID.")
+          const transcript = value.transcription?.transcription ? transcriptFrom(raw) : null
+          const notes = Object.values(value.summarizations ?? {}).sort((a, b) =>
+            (b.updatedAt ?? b.createdAt ?? "").localeCompare(a.updatedAt ?? a.createdAt ?? "")).flatMap((summary) =>
+            summary.v2?.summary ?? summary.summary ? [notesFrom(raw, summary.summarizationId)] : [])
+          return decode(ArchiveSnapshotInput, { recordingId, capturedAt, metadata: value.recording, raw, transcript, notes, source })
+        } catch (error) {
+          const rawRecord = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw as Record<string, unknown> : undefined
+          const rawRecording = typeof rawRecord?.recording === "object" && rawRecord.recording !== null && !Array.isArray(rawRecord.recording)
+            ? rawRecord.recording as Record<string, unknown> : undefined
+          const metadata = rawRecording?.id === recordingId ? rawRecording : { id: recordingId }
+          const decodeError = error instanceof PocketError ? error.code : "upstream"
+          return decode(ArchiveSnapshotInput, { recordingId, capturedAt, metadata, raw, transcript: null, notes: [], source, decodeError })
+        }
+      })
+    }),
     getNotes, getTranscript,
     updateNotes: (input: NotesUpdate) => writes.withPermit(Effect.gen(function*() {
       const raw = yield* detail(input.recordingId)
       const before = yield* checked(() => notesFrom(raw, input.summarizationId))
-      yield* checked(() => requireHash(input.expectedHash, before.hash))
+      yield* checked(() => {
+        requireHash(input.expectedHash, before.hash)
+        if (input.expectedRowId !== undefined && input.expectedRowId !== before.rowId) throw failure("conflict", "The Notes row changed since the source snapshot. Read it again before writing.")
+      })
       const backup = yield* backups.save("notes", input.recordingId, { document: before, rawRecording: raw }, before.summarizationId)
       return yield* withBackup(backup.backupId, Effect.gen(function*() {
         const current = yield* getNotes(input.recordingId, input.summarizationId)
