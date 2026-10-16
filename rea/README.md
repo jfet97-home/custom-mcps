@@ -56,6 +56,9 @@ optional engine or runtime is available.
 
 The Docker health endpoint checks the transport process. Verify actual readiness
 through MCPX with a supported tool on a small, explicitly supplied target.
+If container recreation leaves MCPX reporting `Session not found`, recreate only
+the `rea` connection with the URL and authentication above. Preserve its private
+key and Docker volume; a healthy container does not refresh an old MCP session.
 
 ## Investigation skill
 
