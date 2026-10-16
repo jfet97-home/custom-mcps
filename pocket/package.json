@@ -1,0 +1,36 @@
+{
+  "name": "pocket-personal-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "bin": { "pocket-mcp": "dist/src/cli.js" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src test",
+    "lint:fix": "eslint src test --fix",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "start": "node dist/src/cli.js serve",
+    "login": "node dist/src/cli.js login",
+    "install-service": "node dist/src/install.js",
+    "verify-live": "node dist/src/verify-live.js"
+  },
+  "dependencies": {
+    "@effect/platform-node": "4.0.1",
+    "@effect/platform-node-shared": "4.0.1",
+    "@napi-rs/keyring": "2.1.1",
+    "effect": "4.0.1",
+    "playwright": "1.64.1",
+    "proper-lockfile": "4.1.2"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.32.1",
+    "@types/node": "24.19.1",
+    "@types/proper-lockfile": "4.1.4",
+    "eslint": "10.12.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.71.1"
+  },
+  "overrides": { "@effect/platform-node-shared": "4.0.1" }
+}
