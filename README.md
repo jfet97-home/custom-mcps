@@ -7,6 +7,7 @@ Local MCP servers used with the Lunar MCPX gateway.
 | Microsoft Teams | [teams/](teams/) | 9006 | Private host environment settings and the `teams-mcp_auth` Docker volume |
 | Atlassian Media | [atlassian-media/](atlassian-media/) | 9005 | Private runtime environment on the Docker container |
 | Pocket | [pocket/](pocket/) | 9011 | macOS Keychain; native LaunchAgent beside the Docker gateway |
+| REA | [rea/](rea/) | 9012, Docker network only | Private `~/.config/rea-mcp/service.env` and MCPX server configuration |
 
 ## Development
 
@@ -21,6 +22,10 @@ and `npm test` inside `atlassian-media/`. See its [README](atlassian-media/READM
 For Pocket, use the same npm checks inside `pocket/`. Its native Effect v4 MCP
 supports complete Notes/transcript reads and guarded writes. Run its dedicated
 login command once, then install the native Mac service; see [Pocket setup](pocket/README.md).
+
+REA contains Docker deployment configuration for pinned REA and Supergateway
+packages. Validate Compose and Docker build checks, then build and verify a
+supported tool through MCPX; see [REA setup](rea/README.md).
 
 ## Deployment
 
@@ -37,6 +42,10 @@ containers; source publication does not publish an authenticated deployment.
 Pocket runs natively as `com.jfet97.pocket-mcp` so it can use macOS Keychain
 directly. MCPX connects to `http://host.docker.internal:9011/mcp`. Its private
 backups and deployment state stay outside the checkout.
+
+REA runs directly from `rea/compose.yaml` in this checkout. MCPX connects to
+`http://rea-mcp:9012/mcp` over the shared Docker network. The container publishes
+no host port, and private credentials stay outside Git.
 
 Teams is based on [ssasuoirafen/teams-mcp-server](https://github.com/ssasuoirafen/teams-mcp-server)
 and retains its [MIT license](teams/LICENSE). This monorepo starts with the current

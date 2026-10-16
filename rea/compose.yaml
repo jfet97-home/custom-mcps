@@ -1,0 +1,43 @@
+name: rea-mcp
+
+services:
+  rea-mcp:
+    build: .
+    image: rea-mcp-local:6.5.0
+    init: true
+    restart: unless-stopped
+    stdin_open: true
+    env_file:
+      - "${REA_ENV_FILE:-${HOME}/.config/rea-mcp/service.env}"
+    environment:
+      HOME: /home/node
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=1g
+    volumes:
+      - rea_state:/home/node/.rea
+    networks: [gateway]
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:9012/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options: {max-size: 5m, max-file: "2"}
+
+volumes:
+  rea_state:
+    name: rea-mcp_rea_state
+
+networks:
+  gateway:
+    external: true
+    name: "${MCPX_NETWORK:-lunar-mcpx_default}"

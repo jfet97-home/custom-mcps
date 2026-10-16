@@ -38,3 +38,13 @@ jobs:
       - run: npm run lint
       - run: npm run typecheck
       - run: npm test
+
+  rea:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rea
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker buildx build --check .
+      - run: docker build -t rea-mcp-local:check .
