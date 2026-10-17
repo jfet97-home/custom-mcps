@@ -235,7 +235,7 @@ deletion, regeneration, organization administration or billing operations exist.
 
 ## Webhook bridge and local archive
 
-The Pocket webhook is received by the Pi at `https://hooks.raspfet.dev/pocket`.
+The Pocket webhook is received by the Pi at `https://hooks.raspfet.dev/t3/pocket`.
 Its public listener verifies the HMAC signature over the original timestamp and
 raw request body, validates freshness and owner identity, and stores the event
 before returning success. Only the public webhook route is exposed through
