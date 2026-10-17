@@ -18,6 +18,12 @@ services:
       - /tmp:rw,nosuid,nodev,size=1g
     volumes:
       - rea_state:/home/node/.rea
+      - type: bind
+        source: "${REA_TARGETS_DIR:-${HOME}/.local/share/rea-targets}"
+        target: /targets
+        read_only: true
+        bind:
+          create_host_path: false
     networks: [gateway]
     healthcheck:
       test:

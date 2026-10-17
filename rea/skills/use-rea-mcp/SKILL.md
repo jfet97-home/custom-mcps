@@ -19,17 +19,15 @@ assistant can read it locally.
 
 1. Resolve the app, binary or package selected by the user. Ask when its identity
    is ambiguous; nearby files and earlier reports do not select a new target.
-2. Establish the existing file-access mapping before copying. The intended
-   workflow uses one agreed host folder outside Git, mounted read-only into REA
-   as `/targets`. Verify the actual host source and container destination from
-   existing deployment metadata; do not assume this mount exists. **The current
-   Compose configuration has no host target mount.** The host folder still needs
-   to be chosen and its mount configured as a separate setup change.
-3. If this mapping is missing, explain that target preparation is blocked and
-   resolve the folder/access choice with the user before proceeding. Do not
-   create an arbitrary staging folder, change Compose or restart the service as
-   part of an ordinary analysis request. Reuse a mapping already agreed and
-   configured; do not ask for the same choice on every investigation.
+2. Use the existing read-only `/targets` mount. Compose defaults its host source
+   to `~/.local/share/rea-targets`; `REA_TARGETS_DIR` can override it when the
+   container is created. Inspect the running service's mounts to resolve the
+   actual source rather than relying only on the default.
+3. Reuse that mapping for each investigation. Copying more files into the mounted
+   folder needs no Compose change or container recreation. If the mount is
+   actually missing, report the observed deployment mismatch; use a separate
+   maintenance/setup change to restore it, preserving choices already authorized
+   in the conversation.
 4. With the mapping available, an assistant with host filesystem tools copies
    only the selected target and approved companion files into an investigation
    directory in that folder. Preserve the originals, existing staged targets,

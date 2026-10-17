@@ -17,9 +17,12 @@ host port. Credentials and mutable state are kept outside the source checkout.
 
 ## Targets and capabilities
 
-REA receives container filesystem paths. Host applications become available only
-through explicitly prepared file access. The intended shared-folder workflow uses
-a read-only `/targets` mount, which is not configured in the current Compose file.
+REA receives container filesystem paths. Compose mounts
+`${REA_TARGETS_DIR:-${HOME}/.local/share/rea-targets}` read-only at `/targets`.
+The host directory must already exist. Copy selected files or application bundles
+into an investigation directory there; new files are visible without recreating
+the container. A file at `<host-target-folder>/investigation/example.jar` is
+available to REA as `/targets/investigation/example.jar`.
 The [usage skill](skills/use-rea-mcp/SKILL.md) records target selection, copying and
 host-to-container path translation.
 
