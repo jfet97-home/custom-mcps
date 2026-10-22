@@ -1,6 +1,6 @@
 FROM eclipse-temurin:21-jdk-jammy@sha256:e0c60c487345d1dc9d0fc7b6f0496f3cc941e5132e09296cc17a6decc71b902b AS java
 
-FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8 AS ghidra-build
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS ghidra-build
 
 ARG GHIDRA_VERSION=12.1.4
 ARG GHIDRA_RELEASE_DATE=20260921
@@ -30,7 +30,7 @@ RUN case "$TARGETARCH" in \
     && install -D -m 755 ghidra_opt "/opt/ghidra/Ghidra/Features/Decompiler/os/$ghidra_platform/decompile" \
     && rm -rf ghi_opt ghidra_opt
 
-FROM node:24.14.0-bookworm-slim@sha256:d8e448a56fc63242f70026718378bd4b00f8c82e78d20eefb199224a4d8e33d8
+FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 
 ENV NODE_ENV=production \
     JAVA_HOME=/opt/java/openjdk \

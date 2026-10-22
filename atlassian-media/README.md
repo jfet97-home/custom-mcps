@@ -98,3 +98,13 @@ limits. Responses, image sizes, and the in-memory cache are bounded. API credent
 go only to `api.atlassian.com`; Media credentials go to `api.media.atlassian.com`.
 Cross-origin redirects strip authentication. Public endpoints validate Host and
 Origin, and deployment keeps the service local to this computer and Docker network.
+
+## Node security runtime
+
+The Dockerfile pins official Node 24.22.1 images by immutable digest in both
+build and runtime stages, applying the October 2026 Node security release.
+This is a runtime rebuild of the existing application with the same dependency
+lock, not an application or protocol migration. Preserve the existing private
+state, credentials, mounts and lifecycle settings when replacing the container.
+Verify the actual runtime and a bounded service read after deployment; updating
+host Node or running nix-darwin activation does not update this container.

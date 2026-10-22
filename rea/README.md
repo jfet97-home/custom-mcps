@@ -46,3 +46,13 @@ Skillshare makes both available globally; this repository remains the source for
 
 Personal deployment, authentication, upgrades, target-mount setup and recovery
 procedures live in the global `rea-mcp` maintenance skill, outside this repository.
+
+## Node security runtime
+
+The Dockerfile pins official Node 24.22.1 images by immutable digest in both
+build and runtime stages, applying the October 2026 Node security release.
+This is a runtime rebuild of the existing application with the same dependency
+lock, not an application or protocol migration. Preserve the existing private
+state, credentials, mounts and lifecycle settings when replacing the container.
+Verify the actual runtime and a bounded service read after deployment; updating
+host Node or running nix-darwin activation does not update this container.
